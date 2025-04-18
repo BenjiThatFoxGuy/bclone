@@ -1,3 +1,9 @@
+> ⚠️ **Unofficial Fork Disclaimer**  
+> This is an **unofficial fork** of [rclone](https://rclone.org), with additional enhancements such as **Teldrive** and **Terabox** support.  
+> I am **not affiliated with the upstream maintainers**, and this fork **does not intend to be malicious or harmful** in any way.  
+> Please **read the source code** if you're unsure or want to verify that it behaves as described.  
+> Contributions, feedback, and scrutiny are welcome.
+
 [<img src="https://rclone.org/img/logo_on_light__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-light-mode-only)
 [<img src="https://rclone.org/img/logo_on_dark__horizontal_color.svg" width="50%" alt="rclone logo">](https://rclone.org/#gh-dark-mode-only)
 
