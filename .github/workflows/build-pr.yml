@@ -3,6 +3,10 @@ name: build-pr
 on:
   pull_request:
 
+concurrency:
+  group: build-${{ github.head_ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     timeout-minutes: 60
