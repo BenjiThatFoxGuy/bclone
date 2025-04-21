@@ -104,9 +104,9 @@ var cmdSelfUpdate = &cobra.Command{
 // or find the latest micro release for a given major.minor release.
 // Note: this will not be applied to beta releases.
 func GetVersion(ctx context.Context, beta bool, version string) (newVersion, siteURL string, err error) {
-	siteURL = "https://downloads.rclone.org"
+	siteURL = "https://github.com/BenjiThatFoxGuy/bclone/releases/latest/download"
 	if beta {
-		siteURL = "https://beta.rclone.org"
+		siteURL = "https://github.com/BenjiThatFoxGuy/bclone/releases/latest/download"
 	}
 
 	if version == "" {
