@@ -104,44 +104,48 @@ var cmdSelfUpdate = &cobra.Command{
 // or find the latest micro release for a given major.minor release.
 // Note: this will not be applied to beta releases.
 func GetVersion(ctx context.Context, beta bool, version string) (newVersion, siteURL string, err error) {
-	siteURL = "https://github.com/BenjiThatFoxGuy/bclone/releases/latest/download"
-	if beta {
-		siteURL = "https://github.com/BenjiThatFoxGuy/bclone/releases/latest/download"
-	}
-
+	baseURL := "https://github.com/BenjiThatFoxGuy/bclone/releases"
 	if version == "" {
-		// Request the latest release number from the download site
-		_, newVersion, _, err = versionCmd.GetVersion(ctx, siteURL+"/version.txt")
-		return
-	}
-
-	newVersion = version
-	if version[0] != 'v' {
-		newVersion = "v" + version
-	}
-	if beta {
-		return
-	}
-
-	if valid, _ := regexp.MatchString(`^v\d+\.\d+(\.\d+)?$`, newVersion); !valid {
-		return "", siteURL, errors.New("invalid semantic version")
-	}
-
-	// Find the latest stable micro release
-	if strings.Count(newVersion, ".") == 1 {
-		html, err := downloadFile(ctx, siteURL)
+		// Fetch latest version from version.txt
+		_, newVersion, _, err = versionCmd.GetVersion(ctx, baseURL+"/latest/download/version.txt")
 		if err != nil {
-			return "", siteURL, fmt.Errorf("failed to get list of releases: %w", err)
+			return "", baseURL, fmt.Errorf("failed to fetch version: %w", err)
 		}
-		reSubver := fmt.Sprintf(`href="\./%s\.\d+/"`, regexp.QuoteMeta(newVersion))
-		allSubvers := regexp.MustCompile(reSubver).FindAllString(string(html), -1)
-		if allSubvers == nil {
-			return "", siteURL, errors.New("could not find the minor release")
-		}
-		// Use the fact that releases in the index are sorted by date
-		lastSubver := allSubvers[len(allSubvers)-1]
-		newVersion = lastSubver[8 : len(lastSubver)-2]
+	} else {
+		newVersion = version
 	}
+
+	// Ensure version starts with 'v'
+	if newVersion[0] != 'v' {
+		newVersion = "v" + newVersion
+	}
+
+	if !beta {
+		// Validate version format
+		if valid, _ := regexp.MatchString(`^v\d+\.\d+(\.\d+)?$`, newVersion); !valid {
+			return "", baseURL, errors.New("invalid semantic version")
+		}
+
+		// Fetch latest micro version if needed
+		if strings.Count(newVersion, ".") == 1 {
+			html, err := downloadFile(ctx, baseURL)
+			if err != nil {
+				return "", baseURL, fmt.Errorf("failed to get list of releases: %w", err)
+			}
+			reSubver := fmt.Sprintf(`href="/BenjiThatFoxGuy/bclone/releases/tag/%s\.\d+"`, regexp.QuoteMeta(newVersion))
+			allSubvers := regexp.MustCompile(reSubver).FindAllString(string(html), -1)
+			if allSubvers == nil {
+				return "", baseURL, errors.New("could not find the minor release")
+			}
+			// Extract the last version (latest micro version)
+			lastSubver := allSubvers[len(allSubvers)-1]
+			start := strings.LastIndex(lastSubver, "/tag/") + len("/tag/")
+			newVersion = lastSubver[start:]
+		}
+	}
+
+	// Final download siteURL will include the version
+	siteURL = fmt.Sprintf("%s/%s/download", baseURL, newVersion)
 	return
 }
 
