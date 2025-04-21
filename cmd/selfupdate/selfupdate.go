@@ -105,48 +105,45 @@ var cmdSelfUpdate = &cobra.Command{
 // Note: this will not be applied to beta releases.
 func GetVersion(ctx context.Context, beta bool, version string) (newVersion, siteURL string, err error) {
 	baseURL := "https://github.com/BenjiThatFoxGuy/bclone/releases"
+
 	if version == "" {
-		// Fetch latest version from version.txt
+		// Get version from version.txt
 		_, newVersion, _, err = versionCmd.GetVersion(ctx, baseURL+"/latest/download/version.txt")
 		if err != nil {
-			return "", baseURL, fmt.Errorf("failed to fetch version: %w", err)
+			return "", "", fmt.Errorf("failed to fetch version: %w", err)
 		}
 	} else {
 		newVersion = version
 	}
 
-	// Ensure version starts with 'v'
-	if newVersion[0] != 'v' {
+	// Prefix with 'v' if needed
+	if !strings.HasPrefix(newVersion, "v") {
 		newVersion = "v" + newVersion
 	}
 
 	if !beta {
-		// Validate version format
 		if valid, _ := regexp.MatchString(`^v\d+\.\d+(\.\d+)?$`, newVersion); !valid {
-			return "", baseURL, errors.New("invalid semantic version")
+			return "", "", errors.New("invalid semantic version")
 		}
 
-		// Fetch latest micro version if needed
 		if strings.Count(newVersion, ".") == 1 {
 			html, err := downloadFile(ctx, baseURL)
 			if err != nil {
-				return "", baseURL, fmt.Errorf("failed to get list of releases: %w", err)
+				return "", "", fmt.Errorf("failed to get list of releases: %w", err)
 			}
 			reSubver := fmt.Sprintf(`href="/BenjiThatFoxGuy/bclone/releases/tag/%s\.\d+"`, regexp.QuoteMeta(newVersion))
 			allSubvers := regexp.MustCompile(reSubver).FindAllString(string(html), -1)
 			if allSubvers == nil {
-				return "", baseURL, errors.New("could not find the minor release")
+				return "", "", errors.New("could not find the minor release")
 			}
-			// Extract the last version (latest micro version)
 			lastSubver := allSubvers[len(allSubvers)-1]
 			start := strings.LastIndex(lastSubver, "/tag/") + len("/tag/")
 			newVersion = lastSubver[start:]
 		}
 	}
 
-	// Final download siteURL will include the version
-	siteURL = fmt.Sprintf("%s/%s/download", baseURL, newVersion)
-	return
+	siteURL = fmt.Sprintf("%s/%s/download", baseURL, newVersion) // e.g. /v1.69.6/download
+	return newVersion, siteURL, nil
 }
 
 // InstallUpdate performs rclone self-update
