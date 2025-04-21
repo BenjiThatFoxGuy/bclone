@@ -84,4 +84,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr comment ${{ github.event.pull_request.number }} \
-            --body "✅ Artifacts built and uploaded. You can download them from the *Actions* tab. [Click here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n_Artifacts will expire in 7 days._"
+            --body "✅ Artifacts built and uploaded. You can download them from the *Actions* tab. [Click here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n_Artifacts will expire in a day._"
