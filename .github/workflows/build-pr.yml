@@ -131,6 +131,9 @@ jobs:
         with:
           path: artifacts
 
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Comment with artifact info
         if: github.event_name == 'pull_request'
         env:
