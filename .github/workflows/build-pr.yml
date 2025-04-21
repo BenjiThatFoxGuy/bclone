@@ -127,8 +127,10 @@ jobs:
         with:
           path: artifacts
 
-      - name: Comment on PR
+      - name: Comment with artifact info
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr comment ${{ github.event.pull_request.number }} --body "$(echo '✅ Artifacts built and uploaded. You can download them from the *Actions* tab_
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "✅ Artifacts built and uploaded. You can download them from the *Actions* tab. [Click here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n_Artifacts will expire in 7 days._"
