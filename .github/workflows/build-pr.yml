@@ -2,6 +2,7 @@ name: build-pr
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]  # Trigger for PR events
 
 concurrency:
   group: build-${{ github.head_ref }}
@@ -10,42 +11,8 @@ concurrency:
 jobs:
   build:
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        job_name: ['linux', 'windows', 'mac_amd64', 'mac_arm64']
-
-        include:
-          - job_name: linux
-            os: ubuntu-latest
-            go: '>=1.24.0-rc.1'
-            gotags: cmount
-            cgo: '0'
-            build_flags: '-include "^(linux/amd64|linux/arm64|linux/arm-v7)"'
-
-          - job_name: windows
-            os: windows-latest
-            go: '>=1.24.0-rc.1'
-            gotags: cmount
-            cgo: '0'
-            build_flags: '-include "^(windows/amd64|windows/arm64)"'
-            build_args: '-buildmode exe'
-
-          - job_name: mac_amd64
-            os: macos-latest
-            go: '>=1.23.0-rc.1'
-            gotags: 'cmount'
-            build_flags: '-include "^darwin/amd64" -cgo'
-
-          - job_name: mac_arm64
-            os: macos-latest
-            go: '>=1.23.0-rc.1'
-            gotags: 'cmount'
-            build_flags: '-include "^darwin/arm64" -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib'
-
-    name: ${{ matrix.job_name }}
-    runs-on: ${{ matrix.os }}
-
+    runs-on: windows-latest
+    if: github.actor == github.repository_owner  # Only run if PR is by repo owner
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,40 +22,18 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go }}
+          go-version: '>=1.24.0-rc.1'
           check-latest: true
 
       - name: Set environment variables
         shell: bash
         run: |
-          echo 'GOTAGS=${{ matrix.gotags }}' >> $GITHUB_ENV
-          echo 'BUILD_FLAGS=${{ matrix.build_flags }}' >> $GITHUB_ENV
-          echo 'BUILD_ARGS=${{ matrix.build_args }}' >> $GITHUB_ENV
-          if [[ "${{ matrix.cgo }}" != "" ]]; then echo 'CGO_ENABLED=${{ matrix.cgo }}' >> $GITHUB_ENV ; fi
-
-      - name: Install Libraries on Linux
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          sudo modprobe fuse
-          sudo chmod 666 /dev/fuse
-          sudo chown root:$USER /etc/fuse.conf
-          sudo apt-get update
-          sudo apt-get install -y fuse3 libfuse-dev rpm pkg-config git-annex git-annex-remote-rclone nfs-common
-
-      - name: Install Libraries on macOS
-        if: matrix.os == 'macos-latest'
-        shell: bash
-        run: |
-          unset HOMEBREW_NO_INSTALL_FROM_API
-          brew untap --force homebrew/core
-          brew untap --force homebrew/cask
-          brew update
-          brew install --cask macfuse
-          brew install git-annex git-annex-remote-rclone
+          echo 'GOTAGS=cmount' >> $GITHUB_ENV
+          echo 'BUILD_FLAGS=-include "^(windows/amd64|windows/arm64)"' >> $GITHUB_ENV
+          echo 'BUILD_ARGS=-buildmode exe' >> $GITHUB_ENV
+          echo 'CGO_ENABLED=0' >> $GITHUB_ENV
 
       - name: Install Libraries on Windows
-        if: matrix.os == 'windows-latest'
         shell: powershell
         run: |
           choco install -y winfsp zip
@@ -111,13 +56,12 @@ jobs:
       - name: Build rclone
         shell: bash
         run: |
-          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then make release_dep_linux ; fi
           make cross
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rclone-${{ matrix.job_name }}
+          name: rclone-windows
           path: ${{ github.workspace }}/build/**/*
           retention-days: 7
 
