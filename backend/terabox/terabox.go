@@ -1,5 +1,5 @@
 // Package terabox provides an interface to the Terabox storage system.
-
+//
 // resources for implementation:
 // https://github.com/ivansaul/terabox_downloader
 // https://gist.github.com/CypherpunkSamurai/58d8f2b669e101e893a6ecf3d3938412
@@ -9,7 +9,6 @@
 //
 // Documentation:
 // https://www.terabox.com/integrations/docs?lang=en
-
 package terabox
 
 import (
@@ -35,9 +34,9 @@ import (
 )
 
 const (
-	baseURL             = "https://www.terabox.com"
-	chunkSize     int64 = 4 << 20 // 4MB
-	fileLimitSize int64 = 4 << 30 // 4GB
+	baseURL       = "https://www.terabox.com"
+	chunkSize     = 4 * fs.Mebi // 4MB
+	fileLimitSize = 4 * fs.Gibi // 4GB
 
 	// minSleep       = 400 * time.Millisecond // api is extremely rate limited now
 	// maxSleep       = 5 * time.Second
@@ -89,7 +88,7 @@ func init() {
 				Default:  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
 			},
 			{
-				Help:     "Set extra debug level from 0 to 3 (0 - none; 1 - name of function and params; 2 - response output; 3 - request output)",
+				Help:     "Set extra debug level from 0 to 4 (0 - none; 1 - name of function and params; 2 - response output + body; 3 - request output, 4 - request body)",
 				Name:     "debug_level",
 				Advanced: true,
 				Default:  0,
@@ -115,7 +114,7 @@ type Options struct {
 	Cookie            string               `config:"cookie"`
 	DeletePermanently bool                 `config:"delete_permanently"`
 	UserAgent         string               `config:"user_agent"`
-	DebugLevel        uint8                `config:"debug"`
+	DebugLevel        uint8                `config:"debug_level"`
 	Enc               encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -172,10 +171,12 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 
 	debug(opt, 1, "NewFS %s; %s; %+v;", name, root, opt)
 
+	if root[0:1] == "." {
+		root = root[1:]
+	}
+
 	if root == "" {
 		root = "/"
-	} else if root[0:1] == "." {
-		root = root[1:]
 	}
 
 	f := &Fs{
@@ -729,6 +730,6 @@ func (o *Object) Remove(ctx context.Context) error {
 	debug(o.fs.opt, 1, "Remove")
 
 	return o.fs.apiOperation(ctx, "delete", []api.OperationalItem{
-		{Path: o.remote},
+		{Path: libPath.Join(o.fs.root, o.remote)},
 	})
 }
