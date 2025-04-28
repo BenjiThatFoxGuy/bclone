@@ -191,6 +191,19 @@ func (jobs *Jobs) Get(ID int64) *Job {
 	return jobs.jobs[ID]
 }
 
+func getJobID(in rc.Params) (int64, bool, error) {
+	jobID, err := in.GetInt64("_jobid")
+	if err != nil {
+		if rc.IsErrParamNotFound(err) {
+			return 0, false, nil
+		} else {
+			return 0, false, err
+		}
+	}
+	delete(in, "_jobid")
+	return jobID, true, nil
+}
+
 // Check to see if the group is set
 func getGroup(ctx context.Context, in rc.Params, id int64) (context.Context, string, error) {
 	group, err := in.GetString("_group")
@@ -261,8 +274,12 @@ var jobKey = jobKeyType{}
 
 // NewJob creates a Job and executes it, possibly in the background if _async is set
 func (jobs *Jobs) NewJob(ctx context.Context, fn rc.Func, in rc.Params) (job *Job, out rc.Params, err error) {
-	id := jobID.Add(1)
 	in = in.Copy() // copy input so we can change it
+
+	customID, hasCustomID, err := getJobID(in)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	ctx, isAsync, err := getAsync(ctx, in)
 	if err != nil {
@@ -277,6 +294,16 @@ func (jobs *Jobs) NewJob(ctx context.Context, fn rc.Func, in rc.Params) (job *Jo
 	ctx, err = getFilter(ctx, in)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	var id int64
+	if hasCustomID {
+		if _, ok := jobs.jobs[customID]; ok {
+			return nil, nil, fmt.Errorf("job ID %d already in use", customID)
+		}
+		id = customID
+	} else {
+		id = jobID.Add(1)
 	}
 
 	ctx, group, err := getGroup(ctx, in, id)
