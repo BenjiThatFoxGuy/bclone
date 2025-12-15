@@ -59,7 +59,7 @@ jobs:
           make cross
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rclone-windows
           path: ${{ github.workspace }}/build/**/*
