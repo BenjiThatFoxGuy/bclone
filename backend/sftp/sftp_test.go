@@ -1,4 +1,4 @@
-// Test Sftp filesystem interface
+﻿// Test Sftp filesystem interface
 
 //go:build !plan9
 

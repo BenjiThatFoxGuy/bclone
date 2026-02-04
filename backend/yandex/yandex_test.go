@@ -1,4 +1,4 @@
-// Test Yandex filesystem interface
+﻿// Test Yandex filesystem interface
 package yandex_test
 
 import (

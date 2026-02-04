@@ -1,4 +1,4 @@
-// Test memory filesystem interface
+﻿// Test memory filesystem interface
 package memory
 
 import (

@@ -1,4 +1,4 @@
-//go:build unix
+﻿//go:build unix
 
 // Package nfs implements a server to serve a VFS remote over the NFSv3 protocol
 //

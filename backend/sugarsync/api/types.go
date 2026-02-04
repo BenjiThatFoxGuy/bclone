@@ -1,4 +1,4 @@
-// Package api has type definitions for sugarsync
+﻿// Package api has type definitions for sugarsync
 //
 // Converted from the API docs with help from https://www.onlinetool.io/xmltogo/
 package api

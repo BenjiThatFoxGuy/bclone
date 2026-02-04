@@ -1,4 +1,4 @@
-// Package plugin implements loading out-of-tree storage backends
+﻿// Package plugin implements loading out-of-tree storage backends
 // using https://golang.org/pkg/plugin/ on Linux and macOS.
 //
 // If the $RCLONE_PLUGIN_PATH is present, any Go plugins in that dir

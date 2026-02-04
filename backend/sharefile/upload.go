@@ -1,4 +1,4 @@
-// Upload large files for sharefile
+﻿// Upload large files for sharefile
 //
 // Docs - https://api.sharefile.com/rest/docs/resource.aspx?name=Items#Upload_File
 

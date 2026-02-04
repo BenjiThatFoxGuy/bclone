@@ -1,4 +1,4 @@
-package quickxorhash
+﻿package quickxorhash
 
 import (
 	"crypto/rand"

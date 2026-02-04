@@ -1,4 +1,4 @@
-// Package march traverses two directories in lock step
+﻿// Package march traverses two directories in lock step
 package march
 
 import (

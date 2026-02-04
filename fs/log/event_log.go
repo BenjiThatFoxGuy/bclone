@@ -1,4 +1,4 @@
-// Windows event logging stubs for non windows machines
+﻿// Windows event logging stubs for non windows machines
 
 //go:build !windows
 

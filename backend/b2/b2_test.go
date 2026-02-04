@@ -1,4 +1,4 @@
-// Test B2 filesystem interface
+﻿// Test B2 filesystem interface
 package b2
 
 import (

@@ -1,4 +1,4 @@
-// This file contains the implementation of the sync batcher for uploads
+﻿// This file contains the implementation of the sync batcher for uploads
 //
 // Dropbox rules say you can start as many batches as you want, but
 // you may only have one batch being committed and must wait for the

@@ -1,4 +1,4 @@
-// Package api defines types for interacting with the FileLu API.
+﻿// Package api defines types for interacting with the FileLu API.
 package api
 
 import "encoding/json"

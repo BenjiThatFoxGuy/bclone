@@ -1,4 +1,4 @@
-// Test Combine filesystem interface
+﻿// Test Combine filesystem interface
 package combine_test
 
 import (

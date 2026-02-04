@@ -1,4 +1,4 @@
-// Package seafile provides an interface to the Seafile storage system.
+﻿// Package seafile provides an interface to the Seafile storage system.
 package seafile
 
 import (

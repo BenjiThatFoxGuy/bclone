@@ -1,4 +1,4 @@
-// Package fstest provides utilities for testing the Fs
+﻿// Package fstest provides utilities for testing the Fs
 package fstest
 
 // FIXME put name of test FS in Fs structure

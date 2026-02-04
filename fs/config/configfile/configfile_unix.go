@@ -1,4 +1,4 @@
-// Read, write and edit the config file
+﻿// Read, write and edit the config file
 // Unix specific functions.
 
 //go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris

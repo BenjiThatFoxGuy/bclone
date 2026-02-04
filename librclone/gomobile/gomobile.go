@@ -1,4 +1,4 @@
-// Package gomobile exports shims for gomobile use
+﻿// Package gomobile exports shims for gomobile use
 package gomobile
 
 import (

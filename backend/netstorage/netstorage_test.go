@@ -1,4 +1,4 @@
-package netstorage_test
+﻿package netstorage_test
 
 import (
 	"testing"

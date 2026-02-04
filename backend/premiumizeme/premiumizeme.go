@@ -1,4 +1,4 @@
-// Package premiumizeme provides an interface to the premiumize.me
+﻿// Package premiumizeme provides an interface to the premiumize.me
 // object storage system.
 package premiumizeme
 

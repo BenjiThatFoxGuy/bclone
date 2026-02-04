@@ -1,4 +1,4 @@
-// Package rcflags implements command line flags to set up the remote control
+﻿// Package rcflags implements command line flags to set up the remote control
 package rcflags
 
 import (

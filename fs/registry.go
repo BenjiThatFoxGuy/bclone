@@ -1,4 +1,4 @@
-// Filesystem registry and backend options
+﻿// Filesystem registry and backend options
 
 package fs
 

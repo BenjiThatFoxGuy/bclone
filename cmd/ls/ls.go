@@ -1,4 +1,4 @@
-// Package ls provides the ls command.
+﻿// Package ls provides the ls command.
 package ls
 
 import (

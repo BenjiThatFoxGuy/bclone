@@ -1,4 +1,4 @@
-// Package s3 provides an interface to Amazon S3 object storage
+﻿// Package s3 provides an interface to Amazon S3 object storage
 package s3
 
 //go:generate go run gen_setfrom.go -o setfrom.go

@@ -1,4 +1,4 @@
-// Upload for drive
+﻿// Upload for drive
 //
 // Docs
 // Resumable upload: https://developers.google.com/drive/web/manage-uploads#resumable

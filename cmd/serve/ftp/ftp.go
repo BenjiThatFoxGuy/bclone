@@ -1,4 +1,4 @@
-//go:build !plan9
+﻿//go:build !plan9
 
 // Package ftp implements an FTP server for rclone
 package ftp

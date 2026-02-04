@@ -1,4 +1,4 @@
-// Package pacer makes pacing and retrying API calls easy
+﻿// Package pacer makes pacing and retrying API calls easy
 package pacer
 
 import (

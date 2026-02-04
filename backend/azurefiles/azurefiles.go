@@ -1,4 +1,4 @@
-//go:build !plan9 && !js
+﻿//go:build !plan9 && !js
 
 // Package azurefiles provides an interface to Microsoft Azure Files
 package azurefiles

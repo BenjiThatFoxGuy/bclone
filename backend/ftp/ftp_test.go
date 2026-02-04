@@ -1,4 +1,4 @@
-// Test FTP filesystem interface
+﻿// Test FTP filesystem interface
 package ftp_test
 
 import (

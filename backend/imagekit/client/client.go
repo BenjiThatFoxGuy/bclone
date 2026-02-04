@@ -1,4 +1,4 @@
-// Package client provides a client for interacting with the ImageKit API.
+﻿// Package client provides a client for interacting with the ImageKit API.
 package client
 
 import (

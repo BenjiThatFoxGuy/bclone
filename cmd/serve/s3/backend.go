@@ -1,4 +1,4 @@
-// Package s3 implements an s3 server for rclone
+﻿// Package s3 implements an s3 server for rclone
 package s3
 
 import (

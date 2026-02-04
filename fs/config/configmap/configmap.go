@@ -1,4 +1,4 @@
-// Package configmap provides an abstraction for reading and writing config
+﻿// Package configmap provides an abstraction for reading and writing config
 package configmap
 
 import (

@@ -1,4 +1,4 @@
-package bilib
+﻿package bilib
 
 import (
 	"bytes"

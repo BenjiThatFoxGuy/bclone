@@ -1,4 +1,4 @@
-// Package cache implements the Fs cache
+﻿// Package cache implements the Fs cache
 package cache
 
 import (

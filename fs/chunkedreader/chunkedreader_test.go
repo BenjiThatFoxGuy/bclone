@@ -1,4 +1,4 @@
-package chunkedreader
+﻿package chunkedreader
 
 import (
 	"context"

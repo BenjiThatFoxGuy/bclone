@@ -1,4 +1,4 @@
-// Package api has type definitions for pikpak
+﻿// Package api has type definitions for pikpak
 //
 // Manually obtained from the API responses using Browse Dev. Tool and https://mholt.github.io/json-to-go/
 package api

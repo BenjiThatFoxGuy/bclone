@@ -1,4 +1,4 @@
-// Test QingStor filesystem interface
+﻿// Test QingStor filesystem interface
 
 //go:build !plan9 && !js
 

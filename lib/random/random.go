@@ -1,4 +1,4 @@
-// Package random holds a few functions for working with random numbers
+﻿// Package random holds a few functions for working with random numbers
 package random
 
 import (

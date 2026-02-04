@@ -1,4 +1,4 @@
-//go:build race
+﻿//go:build race
 
 // Package israce reports if the Go race detector is enabled.
 //

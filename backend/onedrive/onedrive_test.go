@@ -1,4 +1,4 @@
-// Test OneDrive filesystem interface
+﻿// Test OneDrive filesystem interface
 package onedrive
 
 import (

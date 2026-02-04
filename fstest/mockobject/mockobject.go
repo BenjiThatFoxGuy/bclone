@@ -1,4 +1,4 @@
-// Package mockobject provides a mock object which can be created from a string
+﻿// Package mockobject provides a mock object which can be created from a string
 package mockobject
 
 import (

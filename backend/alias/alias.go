@@ -1,4 +1,4 @@
-// Package alias implements a virtual provider to rename existing remotes.
+﻿// Package alias implements a virtual provider to rename existing remotes.
 package alias
 
 import (

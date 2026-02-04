@@ -1,4 +1,4 @@
-// Package configfile implements a config file loader and saver
+﻿// Package configfile implements a config file loader and saver
 package configfile
 
 import (

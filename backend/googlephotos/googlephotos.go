@@ -1,4 +1,4 @@
-// Package googlephotos provides an interface to Google Photos
+﻿// Package googlephotos provides an interface to Google Photos
 package googlephotos
 
 // FIXME Resumable uploads not implemented - rclone can't resume uploads in general

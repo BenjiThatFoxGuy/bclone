@@ -1,4 +1,4 @@
-//go:build !plan9 && !solaris
+﻿//go:build !plan9 && !solaris
 
 // Package iclouddrive implements the iCloud Drive backend
 package iclouddrive

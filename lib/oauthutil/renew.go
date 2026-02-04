@@ -1,4 +1,4 @@
-package oauthutil
+﻿package oauthutil
 
 import (
 	"sync"

@@ -1,4 +1,4 @@
-// Log the panic under windows to the log file
+﻿// Log the panic under windows to the log file
 //
 // Code from minix, via
 //

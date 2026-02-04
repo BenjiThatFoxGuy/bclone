@@ -1,4 +1,4 @@
-// Package rc provides the rc command.
+﻿// Package rc provides the rc command.
 package rc
 
 import (

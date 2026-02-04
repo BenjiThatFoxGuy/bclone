@@ -1,4 +1,4 @@
-package hash_test
+﻿package hash_test
 
 import (
 	"bytes"

@@ -1,4 +1,4 @@
-// Package terabox provides an interface to the Terabox storage system.
+﻿// Package terabox provides an interface to the Terabox storage system.
 //
 // resources for implementation:
 // https://github.com/ivansaul/terabox_downloader

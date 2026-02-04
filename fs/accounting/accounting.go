@@ -1,4 +1,4 @@
-// Package accounting providers an accounting and limiting reader
+﻿// Package accounting providers an accounting and limiting reader
 package accounting
 
 import (

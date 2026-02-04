@@ -1,4 +1,4 @@
-// FUSE main Fs
+﻿// FUSE main Fs
 
 //go:build linux || (darwin && amd64)
 

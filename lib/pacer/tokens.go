@@ -1,4 +1,4 @@
-// Tokens for controlling concurrency
+﻿// Tokens for controlling concurrency
 
 package pacer
 

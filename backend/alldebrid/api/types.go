@@ -1,4 +1,4 @@
-// Package api contains definitions for using the alldebrid API
+﻿// Package api contains definitions for using the alldebrid API
 package api
 
 import "fmt"

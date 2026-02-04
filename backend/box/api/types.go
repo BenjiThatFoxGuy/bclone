@@ -1,4 +1,4 @@
-// Package api has type definitions for box
+﻿// Package api has type definitions for box
 //
 // Converted from the API docs with help from https://mholt.github.io/json-to-go/
 package api

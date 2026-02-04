@@ -1,4 +1,4 @@
-// Package drive interfaces with the Google Drive object storage system
+﻿// Package drive interfaces with the Google Drive object storage system
 package drive
 
 // FIXME need to deal with some corner cases

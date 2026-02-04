@@ -1,4 +1,4 @@
-// Package bisync implements bisync
+﻿// Package bisync implements bisync
 // Copyright (c) 2017-2020 Chris Nelson
 package bisync
 

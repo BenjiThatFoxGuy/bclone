@@ -1,4 +1,4 @@
-package doi
+﻿package doi
 
 import (
 	"regexp"

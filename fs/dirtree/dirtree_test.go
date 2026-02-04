@@ -1,4 +1,4 @@
-package dirtree
+﻿package dirtree
 
 import (
 	"fmt"

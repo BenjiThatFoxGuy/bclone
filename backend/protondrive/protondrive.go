@@ -1,4 +1,4 @@
-// Package protondrive implements the Proton Drive backend
+﻿// Package protondrive implements the Proton Drive backend
 package protondrive
 
 import (

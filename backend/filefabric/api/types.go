@@ -1,4 +1,4 @@
-// Package api has type definitions for filefabric
+﻿// Package api has type definitions for filefabric
 //
 // Converted from the API responses with help from https://mholt.github.io/json-to-go/
 package api

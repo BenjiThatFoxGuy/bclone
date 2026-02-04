@@ -1,4 +1,4 @@
-// Package internetarchive provides an interface to Internet Archive's Item
+﻿// Package internetarchive provides an interface to Internet Archive's Item
 // via their native API than using S3-compatible endpoints.
 package internetarchive
 

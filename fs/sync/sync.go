@@ -1,4 +1,4 @@
-// Package sync is the implementation of sync/copy/move
+﻿// Package sync is the implementation of sync/copy/move
 package sync
 
 import (

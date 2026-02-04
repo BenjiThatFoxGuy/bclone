@@ -1,4 +1,4 @@
-// Test Cache filesystem interface
+﻿// Test Cache filesystem interface
 
 //go:build !plan9 && !js && !race
 

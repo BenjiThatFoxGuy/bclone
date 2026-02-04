@@ -1,4 +1,4 @@
-// Test smb filesystem interface
+﻿// Test smb filesystem interface
 package smb_test
 
 import (

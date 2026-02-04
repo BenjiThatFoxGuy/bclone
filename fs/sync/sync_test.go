@@ -1,4 +1,4 @@
-// Test sync/copy/move
+﻿// Test sync/copy/move
 
 package sync
 

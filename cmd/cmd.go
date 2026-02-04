@@ -1,4 +1,4 @@
-// Package cmd implements the rclone command
+﻿// Package cmd implements the rclone command
 //
 // It is in a sub package so it's internals can be reused elsewhere
 package cmd

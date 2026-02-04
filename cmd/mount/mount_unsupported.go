@@ -1,4 +1,4 @@
-//go:build !linux
+﻿//go:build !linux
 
 // Package mount implements a FUSE mounting system for rclone remotes.
 //

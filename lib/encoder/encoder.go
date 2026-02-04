@@ -1,4 +1,4 @@
-// Package encoder provides functionality to translate file names
+﻿// Package encoder provides functionality to translate file names
 // for usage on restrictive storage systems.
 //
 // The restricted set of characters are mapped to a unicode equivalent version

@@ -1,4 +1,4 @@
-// Test filefabric filesystem interface
+﻿// Test filefabric filesystem interface
 package filefabric_test
 
 import (

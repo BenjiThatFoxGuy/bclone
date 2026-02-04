@@ -1,4 +1,4 @@
-// Test Swift filesystem interface
+﻿// Test Swift filesystem interface
 package swift
 
 import (

@@ -1,4 +1,4 @@
-// Test S3 filesystem interface
+﻿// Test S3 filesystem interface
 package s3
 
 import (

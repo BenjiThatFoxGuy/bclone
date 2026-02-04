@@ -1,4 +1,4 @@
-// Package doi provides a filesystem interface for digital objects identified by DOIs.
+﻿// Package doi provides a filesystem interface for digital objects identified by DOIs.
 //
 // See: https://www.doi.org/the-identifier/what-is-a-doi/
 package doi

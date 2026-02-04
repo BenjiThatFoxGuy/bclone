@@ -1,4 +1,4 @@
-// rsync style glob parser
+﻿// rsync style glob parser
 
 package filter
 

@@ -1,4 +1,4 @@
-package diskusage
+﻿package diskusage
 
 import (
 	"testing"

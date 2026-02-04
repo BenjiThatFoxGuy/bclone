@@ -1,4 +1,4 @@
-// Package rc implements a remote control server and registry for rclone
+﻿// Package rc implements a remote control server and registry for rclone
 //
 // To register your internal calls, call rc.Add(path, function).  Your
 // function should take and return a Param.  It can also return an

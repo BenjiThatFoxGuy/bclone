@@ -1,4 +1,4 @@
-// Package sync provides the sync command.
+﻿// Package sync provides the sync command.
 package sync
 
 import (

@@ -1,4 +1,4 @@
-package imagekit
+﻿package imagekit
 
 import (
 	"testing"

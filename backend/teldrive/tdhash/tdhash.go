@@ -1,4 +1,4 @@
-// Package tdhash implements the Teldrive hashing algorithm.
+﻿// Package tdhash implements the Teldrive hashing algorithm.
 // Files are split into 16MB blocks (fixed size).
 // Each block is hashed with BLAKE3.
 // Block hashes are concatenated and hashed together to produce the final tree hash.

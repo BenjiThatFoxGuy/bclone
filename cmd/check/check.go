@@ -1,4 +1,4 @@
-// Package check provides the check command.
+﻿// Package check provides the check command.
 package check
 
 import (

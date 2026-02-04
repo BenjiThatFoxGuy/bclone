@@ -1,4 +1,4 @@
-// Package hash provides hash utilities for Fs.
+﻿// Package hash provides hash utilities for Fs.
 package hash
 
 import (

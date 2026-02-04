@@ -1,4 +1,4 @@
-// Test GoogleCloudStorage filesystem interface
+﻿// Test GoogleCloudStorage filesystem interface
 
 package googlecloudstorage_test
 

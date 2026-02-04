@@ -1,4 +1,4 @@
-//go:build plan9 || js
+﻿//go:build plan9 || js
 
 package vfs
 

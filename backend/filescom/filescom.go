@@ -1,4 +1,4 @@
-// Package filescom provides an interface to the Files.com
+﻿// Package filescom provides an interface to the Files.com
 // object storage system.
 package filescom
 

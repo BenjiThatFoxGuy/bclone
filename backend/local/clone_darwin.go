@@ -1,4 +1,4 @@
-//go:build darwin && cgo
+﻿//go:build darwin && cgo
 
 // Package local provides a filesystem interface
 package local

@@ -1,4 +1,4 @@
-package bisync
+﻿package bisync
 
 import (
 	"context"

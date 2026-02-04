@@ -1,4 +1,4 @@
-// Package api provides types used by the OneDrive API.
+﻿// Package api provides types used by the OneDrive API.
 package api
 
 import (

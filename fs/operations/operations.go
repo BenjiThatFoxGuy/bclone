@@ -1,4 +1,4 @@
-// Package operations does generic operations on filesystems and objects
+﻿// Package operations does generic operations on filesystems and objects
 package operations
 
 import (

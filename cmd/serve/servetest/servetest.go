@@ -1,4 +1,4 @@
-// Package servetest provides infrastructure for running loopback
+﻿// Package servetest provides infrastructure for running loopback
 // tests of "rclone serve backend:" against the backend integration
 // tests.
 package servetest

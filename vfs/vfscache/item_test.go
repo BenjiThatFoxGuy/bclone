@@ -1,4 +1,4 @@
-package vfscache
+﻿package vfscache
 
 // FIXME need to test async writeback here
 

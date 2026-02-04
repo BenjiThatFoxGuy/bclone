@@ -1,4 +1,4 @@
-package rc
+﻿package rc
 
 import (
 	"bytes"

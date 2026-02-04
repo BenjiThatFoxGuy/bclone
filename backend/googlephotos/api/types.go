@@ -1,4 +1,4 @@
-// Package api provides types used by the Google Photos API.
+﻿// Package api provides types used by the Google Photos API.
 package api
 
 import (

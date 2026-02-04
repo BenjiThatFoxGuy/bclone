@@ -1,4 +1,4 @@
-// The pkg/xattr module doesn't compile for openbsd or plan9
+﻿// The pkg/xattr module doesn't compile for openbsd or plan9
 
 //go:build openbsd || plan9
 

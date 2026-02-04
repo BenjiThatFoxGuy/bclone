@@ -1,4 +1,4 @@
-// Package mailru provides an interface to the Mail.ru Cloud storage system.
+﻿// Package mailru provides an interface to the Mail.ru Cloud storage system.
 package mailru
 
 import (

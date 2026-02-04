@@ -1,4 +1,4 @@
-// Test Union filesystem interface
+﻿// Test Union filesystem interface
 package union_test
 
 import (

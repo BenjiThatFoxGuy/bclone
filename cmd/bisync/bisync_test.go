@@ -1,4 +1,4 @@
-// TestBisync is a test engine for bisync test cases.
+﻿// TestBisync is a test engine for bisync test cases.
 // See https://rclone.org/bisync/#testing for documentation.
 // Test cases are organized in subdirs beneath ./testdata
 // Results are compared against golden listings and log file.

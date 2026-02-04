@@ -1,4 +1,4 @@
-// Package rmdir provides the rmdir command.
+﻿// Package rmdir provides the rmdir command.
 package rmdir
 
 import (

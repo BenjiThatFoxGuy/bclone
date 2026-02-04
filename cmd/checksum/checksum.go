@@ -1,4 +1,4 @@
-// Package checksum provides the checksum command.
+﻿// Package checksum provides the checksum command.
 package checksum
 
 import (

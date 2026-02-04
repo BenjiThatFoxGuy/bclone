@@ -1,4 +1,4 @@
-// Test Box filesystem interface
+﻿// Test Box filesystem interface
 package box_test
 
 import (

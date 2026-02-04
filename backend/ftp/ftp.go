@@ -1,4 +1,4 @@
-// Package ftp interfaces with FTP servers
+﻿// Package ftp interfaces with FTP servers
 package ftp
 
 import (

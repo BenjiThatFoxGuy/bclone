@@ -1,4 +1,4 @@
-package fs
+﻿package fs
 
 // OverrideDirectory is a wrapper to override the Remote for an
 // Directory

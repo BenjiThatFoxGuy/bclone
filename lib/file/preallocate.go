@@ -1,4 +1,4 @@
-package file
+﻿package file
 
 import "errors"
 

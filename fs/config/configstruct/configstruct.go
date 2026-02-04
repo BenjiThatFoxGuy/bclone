@@ -1,4 +1,4 @@
-// Package configstruct parses unstructured maps into structures
+﻿// Package configstruct parses unstructured maps into structures
 package configstruct
 
 import (

@@ -1,4 +1,4 @@
-// Package terminal provides VT100 terminal codes and a windows
+﻿// Package terminal provides VT100 terminal codes and a windows
 // implementation of that.
 package terminal
 

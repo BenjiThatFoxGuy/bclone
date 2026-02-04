@@ -1,4 +1,4 @@
-// Package compress provides wrappers for Fs and Object which implement compression.
+﻿// Package compress provides wrappers for Fs and Object which implement compression.
 package compress
 
 import (

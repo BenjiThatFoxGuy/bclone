@@ -1,4 +1,4 @@
-// Package api has general type definitions for doi
+﻿// Package api has general type definitions for doi
 package api
 
 // DoiResolverResponse is returned by the DOI resolver API

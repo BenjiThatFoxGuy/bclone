@@ -1,4 +1,4 @@
-package version_test
+﻿package version_test
 
 import (
 	"testing"

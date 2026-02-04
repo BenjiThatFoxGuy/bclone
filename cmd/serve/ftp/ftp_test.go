@@ -1,4 +1,4 @@
-// Serve ftp tests set up a server and run the integration tests
+﻿// Serve ftp tests set up a server and run the integration tests
 // for the ftp remote against it.
 //
 // We skip tests on platforms with troublesome character mappings

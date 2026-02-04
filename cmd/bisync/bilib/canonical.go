@@ -1,4 +1,4 @@
-// Package bilib provides common stuff for bisync and bisync_test
+﻿// Package bilib provides common stuff for bisync and bisync_test
 package bilib
 
 import (

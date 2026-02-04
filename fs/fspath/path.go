@@ -1,4 +1,4 @@
-// Package fspath contains routines for fspath manipulation
+﻿// Package fspath contains routines for fspath manipulation
 package fspath
 
 import (

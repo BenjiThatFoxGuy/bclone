@@ -1,4 +1,4 @@
-// Package quickxorhash provides the quickXorHash algorithm which is a
+﻿// Package quickxorhash provides the quickXorHash algorithm which is a
 // quick, simple non-cryptographic hash algorithm that works by XORing
 // the bytes in a circular-shifting fashion.
 //

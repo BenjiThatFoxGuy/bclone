@@ -1,4 +1,4 @@
-// Package swift provides an interface to the Swift object storage system
+﻿// Package swift provides an interface to the Swift object storage system
 package swift
 
 import (

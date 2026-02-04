@@ -1,4 +1,4 @@
-package putio
+﻿package putio
 
 import (
 	"bytes"

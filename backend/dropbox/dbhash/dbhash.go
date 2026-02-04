@@ -1,4 +1,4 @@
-// Package dbhash implements the dropbox hash as described in
+﻿// Package dbhash implements the dropbox hash as described in
 //
 // https://www.dropbox.com/developers/reference/content-hash
 package dbhash

@@ -1,4 +1,4 @@
-// Ruleguard file implementing custom linting rules.
+﻿// Ruleguard file implementing custom linting rules.
 //
 // Note that when used from golangci-lint (using the gocritic linter configured
 // with the ruleguard check), because rule files are not handled by

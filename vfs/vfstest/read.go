@@ -1,4 +1,4 @@
-package vfstest
+﻿package vfstest
 
 import (
 	"io"

@@ -1,4 +1,4 @@
-// Package obscure contains the Obscure and Reveal commands
+﻿// Package obscure contains the Obscure and Reveal commands
 package obscure
 
 import (

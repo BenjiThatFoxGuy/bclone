@@ -1,4 +1,4 @@
-// Package vfs provides a virtual filing system layer over rclone's
+﻿// Package vfs provides a virtual filing system layer over rclone's
 // native objects.
 //
 // It attempts to behave in a similar way to Go's filing system

@@ -1,4 +1,4 @@
-// This file implements operations.Copy
+﻿// This file implements operations.Copy
 //
 // This is probably the most important operation in rclone.
 

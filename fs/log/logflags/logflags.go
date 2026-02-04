@@ -1,4 +1,4 @@
-// Package logflags implements command line flags to set up the log
+﻿// Package logflags implements command line flags to set up the log
 package logflags
 
 import (

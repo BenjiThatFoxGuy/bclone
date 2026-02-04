@@ -1,4 +1,4 @@
-package fs
+﻿package fs
 
 // TerminalColorMode describes how ANSI codes should be handled
 type TerminalColorMode = Enum[terminalColorModeChoices]

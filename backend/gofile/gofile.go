@@ -1,4 +1,4 @@
-// Package gofile provides an interface to the Gofile
+﻿// Package gofile provides an interface to the Gofile
 // object storage system.
 package gofile
 

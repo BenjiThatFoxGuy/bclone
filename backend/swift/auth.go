@@ -1,4 +1,4 @@
-package swift
+﻿package swift
 
 import (
 	"context"

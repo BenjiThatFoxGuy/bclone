@@ -1,4 +1,4 @@
-// Package ulozto provides an interface to the Uloz.to storage system.
+﻿// Package ulozto provides an interface to the Uloz.to storage system.
 package ulozto
 
 import (

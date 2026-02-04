@@ -1,4 +1,4 @@
-//go:build aix || android || darwin || dragonfly || freebsd || ios || linux
+﻿//go:build aix || android || darwin || dragonfly || freebsd || ios || linux
 
 package diskusage
 

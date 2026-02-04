@@ -1,4 +1,4 @@
-// Device reading functions
+﻿// Device reading functions
 
 //go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
 

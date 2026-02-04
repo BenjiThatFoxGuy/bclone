@@ -1,4 +1,4 @@
-// Windows event logging
+﻿// Windows event logging
 
 //go:build windows
 

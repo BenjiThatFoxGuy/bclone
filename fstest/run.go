@@ -1,4 +1,4 @@
-/*
+﻿/*
 
 This provides Run for use in creating test suites
 

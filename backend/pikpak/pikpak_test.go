@@ -1,4 +1,4 @@
-// Test PikPak filesystem interface
+﻿// Test PikPak filesystem interface
 package pikpak
 
 import (

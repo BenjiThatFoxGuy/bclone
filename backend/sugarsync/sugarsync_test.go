@@ -1,4 +1,4 @@
-// Test Sugarsync filesystem interface
+﻿// Test Sugarsync filesystem interface
 package sugarsync_test
 
 import (

@@ -1,4 +1,4 @@
-// Package jottacloud provides an interface to the Jottacloud storage system.
+﻿// Package jottacloud provides an interface to the Jottacloud storage system.
 package jottacloud
 
 import (

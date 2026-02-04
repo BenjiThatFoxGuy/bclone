@@ -1,4 +1,4 @@
-package alldebrid_test
+﻿package alldebrid_test
 
 import (
 	"testing"

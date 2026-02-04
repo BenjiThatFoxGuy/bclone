@@ -1,4 +1,4 @@
-// environment_test tests the use and precedence of environment variables
+﻿// environment_test tests the use and precedence of environment variables
 //
 // The tests rely on functions defined in cmdtest_test.go
 

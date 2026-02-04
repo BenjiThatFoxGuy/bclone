@@ -1,4 +1,4 @@
-// Package api provides types used by the Teldrive API.
+﻿// Package api provides types used by the Teldrive API.
 package api
 
 import "time"

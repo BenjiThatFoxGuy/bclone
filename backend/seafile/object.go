@@ -1,4 +1,4 @@
-package seafile
+﻿package seafile
 
 import (
 	"context"

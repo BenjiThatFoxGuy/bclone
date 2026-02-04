@@ -1,4 +1,4 @@
-// Package api has type definitions for webdav
+﻿// Package api has type definitions for webdav
 package api
 
 import (

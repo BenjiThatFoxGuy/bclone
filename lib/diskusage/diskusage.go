@@ -1,4 +1,4 @@
-// Package diskusage provides a cross platform version of the statfs
+﻿// Package diskusage provides a cross platform version of the statfs
 // system call to read disk space usage.
 package diskusage
 

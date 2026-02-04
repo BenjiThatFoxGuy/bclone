@@ -1,4 +1,4 @@
-// Package debug contains functions for dealing with runtime/debug functions across go versions
+﻿// Package debug contains functions for dealing with runtime/debug functions across go versions
 package debug
 
 import (

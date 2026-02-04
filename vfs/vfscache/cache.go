@@ -1,4 +1,4 @@
-// Package vfscache deals with caching of files locally for the VFS layer
+﻿// Package vfscache deals with caching of files locally for the VFS layer
 package vfscache
 
 import (

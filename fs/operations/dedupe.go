@@ -1,4 +1,4 @@
-// dedupe - gets rid of identical files remotes which can have duplicate file names (drive, mega)
+﻿// dedupe - gets rid of identical files remotes which can have duplicate file names (drive, mega)
 
 package operations
 

@@ -1,4 +1,4 @@
-// Package errors provides error handling utilities.
+﻿// Package errors provides error handling utilities.
 package errors
 
 import (

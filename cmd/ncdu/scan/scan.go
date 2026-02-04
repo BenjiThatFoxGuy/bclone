@@ -1,4 +1,4 @@
-// Package scan does concurrent scanning of an Fs building up a directory tree.
+﻿// Package scan does concurrent scanning of an Fs building up a directory tree.
 package scan
 
 import (

@@ -1,4 +1,4 @@
-// Run tests for all the remotes.  Run this with package names which
+﻿// Run tests for all the remotes.  Run this with package names which
 // need integration testing.
 //
 // See the `test` target in the Makefile.

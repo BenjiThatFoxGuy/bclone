@@ -1,4 +1,4 @@
-// Package api has type definitions and code related to API-calls for the HiDrive-API.
+﻿// Package api has type definitions and code related to API-calls for the HiDrive-API.
 package api
 
 import (

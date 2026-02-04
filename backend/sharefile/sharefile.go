@@ -1,4 +1,4 @@
-// Package sharefile provides an interface to the Citrix Sharefile
+﻿// Package sharefile provides an interface to the Citrix Sharefile
 // object storage system.
 package sharefile
 

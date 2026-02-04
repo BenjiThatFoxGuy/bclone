@@ -1,4 +1,4 @@
-// Package cryptdecode provides the cryptdecode command.
+﻿// Package cryptdecode provides the cryptdecode command.
 package cryptdecode
 
 import (

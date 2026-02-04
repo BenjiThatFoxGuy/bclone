@@ -1,4 +1,4 @@
-// Utility program to generate Rclone-specific Windows resource system object
+﻿// Utility program to generate Rclone-specific Windows resource system object
 // file (.syso), that can be picked up by a following go build for embedding
 // version information and icon resources into a rclone binary.
 //

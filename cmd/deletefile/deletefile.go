@@ -1,4 +1,4 @@
-// Package deletefile provides the deletefile command.
+﻿// Package deletefile provides the deletefile command.
 package deletefile
 
 import (

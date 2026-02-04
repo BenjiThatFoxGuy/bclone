@@ -1,4 +1,4 @@
-// Unit tests for internal SMB functions
+﻿// Unit tests for internal SMB functions
 package smb
 
 import "testing"

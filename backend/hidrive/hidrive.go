@@ -1,4 +1,4 @@
-// Package hidrive provides an interface to the HiDrive object storage system.
+﻿// Package hidrive provides an interface to the HiDrive object storage system.
 package hidrive
 
 // FIXME HiDrive only supports file or folder names of 255 characters or less.

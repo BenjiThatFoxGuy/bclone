@@ -1,4 +1,4 @@
-// Utilities for accessing the Fs cache
+﻿// Utilities for accessing the Fs cache
 
 package rc
 

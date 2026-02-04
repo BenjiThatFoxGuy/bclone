@@ -1,4 +1,4 @@
-//go:build !plan9 && !js
+﻿//go:build !plan9 && !js
 
 // Package ncdu implements a text based user interface for exploring a remote
 package ncdu

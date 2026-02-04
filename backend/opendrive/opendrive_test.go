@@ -1,4 +1,4 @@
-// Test Opendrive filesystem interface
+﻿// Test Opendrive filesystem interface
 package opendrive_test
 
 import (
