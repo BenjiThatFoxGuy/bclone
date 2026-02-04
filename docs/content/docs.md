@@ -85,7 +85,6 @@ See the following for detailed instructions for
 - [SMB](/smb/)
 - [Storj](/storj/)
 - [SugarSync](/sugarsync/)
-- [Terabox](/terabox/)
 - [Union](/union/)
 - [Uloz.to](/ulozto/)
 - [Uptobox](/uptobox/)
@@ -384,6 +383,9 @@ does not work on Windows.)
 ```sh
 rclone copy ':http,url="https://example.com":path/to/dir' /tmp/dir
 ```
+
+You can use [rclone config string](/commands/rclone_config_string/) to
+convert a remote into a connection string.
 
 #### Connection strings, config and logging
 
