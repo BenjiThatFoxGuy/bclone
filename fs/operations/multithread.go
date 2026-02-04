@@ -568,7 +568,7 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 			}
 		}
 		if completedBytes > 0 {
-			mc.acc.AccountReadN(completedBytes)
+			mc.acc.ServerSideTransferEnd(completedBytes)
 		}
 	}
 
