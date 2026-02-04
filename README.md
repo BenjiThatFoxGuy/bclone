@@ -31,7 +31,7 @@
 [![Build Status](https://github.com/benjithatfoxguy/bclone/workflows/build/badge.svg)](https://github.com/benjithatfoxguy/bclone/actions?query=workflow%3Abuild)
 [![Go Report Card](https://goreportcard.com/badge/github.com/benjithatfoxguy/bclone)](https://goreportcard.com/report/github.com/benjithatfoxguy/bclone)
 [![GoDoc](https://godoc.org/github.com/benjithatfoxguy/bclone?status.svg)](https://godoc.org/github.com/benjithatfoxguy/bclone)
-[![Docker Pulls](https://img.shields.io/docker/pulls/benjithatfoxguy/bclone)](https://hub.docker.com/r/benjithatfoxguy/bclone)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/benjithatfoxguy/bclone/total)
 
 # Rclone
 
