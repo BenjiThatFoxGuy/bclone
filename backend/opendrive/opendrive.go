@@ -1,4 +1,4 @@
-// Package opendrive provides an interface to the OpenDrive storage system.
+﻿// Package opendrive provides an interface to the OpenDrive storage system.
 package opendrive
 
 import (

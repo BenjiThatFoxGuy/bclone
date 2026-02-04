@@ -1,4 +1,4 @@
-// Package version provides machinery for versioning file names
+﻿// Package version provides machinery for versioning file names
 // with a timestamp-based version string
 package version
 

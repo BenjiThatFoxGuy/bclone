@@ -1,4 +1,4 @@
-//go:build !plan9 && !solaris && !js
+﻿//go:build !plan9 && !solaris && !js
 
 // Package oracleobjectstorage provides an interface to the OCI object storage system.
 package oracleobjectstorage

@@ -1,4 +1,4 @@
-// Package alist implements an rclone backend for AList
+﻿// Package alist implements an rclone backend for AList
 package alist
 
 import (

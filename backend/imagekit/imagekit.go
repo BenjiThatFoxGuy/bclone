@@ -1,4 +1,4 @@
-// Package imagekit provides an interface to the ImageKit.io media library.
+﻿// Package imagekit provides an interface to the ImageKit.io media library.
 package imagekit
 
 import (

@@ -1,4 +1,4 @@
-// Test Sia filesystem interface
+﻿// Test Sia filesystem interface
 package sia_test
 
 import (

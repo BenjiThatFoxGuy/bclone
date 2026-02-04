@@ -1,4 +1,4 @@
-// Package mega provides an interface to the Mega
+﻿// Package mega provides an interface to the Mega
 // object storage system.
 package mega
 

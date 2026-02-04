@@ -1,4 +1,4 @@
-// Package convmv provides the convmv command.
+﻿// Package convmv provides the convmv command.
 package convmv
 
 import (

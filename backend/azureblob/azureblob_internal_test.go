@@ -1,4 +1,4 @@
-//go:build !plan9 && !solaris && !js
+﻿//go:build !plan9 && !solaris && !js
 
 package azureblob
 

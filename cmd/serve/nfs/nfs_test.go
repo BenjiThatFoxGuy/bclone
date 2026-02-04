@@ -1,4 +1,4 @@
-//go:build unix
+﻿//go:build unix
 
 // The serving is tested in cmd/nfsmount - here we test anything else
 package nfs

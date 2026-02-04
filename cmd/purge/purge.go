@@ -1,4 +1,4 @@
-// Package purge provides the purge command.
+﻿// Package purge provides the purge command.
 package purge
 
 import (

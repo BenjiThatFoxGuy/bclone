@@ -1,4 +1,4 @@
-//go:build !noselfupdate
+﻿//go:build !noselfupdate
 
 package cmd
 

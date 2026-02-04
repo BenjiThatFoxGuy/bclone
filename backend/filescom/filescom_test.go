@@ -1,4 +1,4 @@
-// Test Files filesystem interface
+﻿// Test Files filesystem interface
 package filescom_test
 
 import (

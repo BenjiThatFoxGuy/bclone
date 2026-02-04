@@ -1,4 +1,4 @@
-// Package api provides types used by the Terabox API.
+﻿// Package api provides types used by the Terabox API.
 package api
 
 // ResponseDefault - check only error

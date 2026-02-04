@@ -1,4 +1,4 @@
-// Package api provides types used by the Uptobox API.
+﻿// Package api provides types used by the Uptobox API.
 package api
 
 import "fmt"

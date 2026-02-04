@@ -1,4 +1,4 @@
-// Package memory provides an interface to an in memory object storage system
+﻿// Package memory provides an interface to an in memory object storage system
 package memory
 
 import (

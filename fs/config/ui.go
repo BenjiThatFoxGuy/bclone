@@ -1,4 +1,4 @@
-// Textual user interface parts of the config system
+﻿// Textual user interface parts of the config system
 
 package config
 

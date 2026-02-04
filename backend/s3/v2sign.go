@@ -1,4 +1,4 @@
-// v2 signing
+﻿// v2 signing
 
 package s3
 

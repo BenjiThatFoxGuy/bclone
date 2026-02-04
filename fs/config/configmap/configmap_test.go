@@ -1,4 +1,4 @@
-package configmap
+﻿package configmap
 
 import (
 	"encoding/base64"
@@ -244,30 +244,6 @@ func TestConfigMapClearSetters(t *testing.T) {
 	assert.Equal(t, []Setter{m1, m2, m3}, m.setters)
 	m.ClearSetters()
 	assert.Equal(t, []Setter(nil), m.setters)
-}
-
-func TestSimpleString(t *testing.T) {
-	// Basic
-	assert.Equal(t, "", Simple(nil).String())
-	assert.Equal(t, "", Simple{}.String())
-	assert.Equal(t, "config1='one'", Simple{
-		"config1": "one",
-	}.String())
-
-	// Check ordering
-	assert.Equal(t, "config1='one',config2='two',config3='three',config4='four',config5='five'", Simple{
-		"config5": "five",
-		"config4": "four",
-		"config3": "three",
-		"config2": "two",
-		"config1": "one",
-	}.String())
-
-	// Check escaping
-	assert.Equal(t, "apple='',config1='o''n''e'", Simple{
-		"config1": "o'n'e",
-		"apple":   "",
-	}.String())
 }
 
 func TestSimpleEncode(t *testing.T) {

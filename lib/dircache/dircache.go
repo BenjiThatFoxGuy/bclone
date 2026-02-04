@@ -1,4 +1,4 @@
-// Package dircache provides a simple cache for caching directory ID
+﻿// Package dircache provides a simple cache for caching directory ID
 // to path lookups and the inverse.
 package dircache
 

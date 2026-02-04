@@ -1,4 +1,4 @@
-package fspath
+﻿package fspath
 
 import (
 	"flag"

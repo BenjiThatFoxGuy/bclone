@@ -1,4 +1,4 @@
-// Package proxy implements a programmable proxy for rclone serve
+﻿// Package proxy implements a programmable proxy for rclone serve
 package proxy
 
 import (
@@ -182,7 +182,7 @@ func (p *Proxy) run(in map[string]string) (config configmap.Simple, err error) {
 	// Obscure any values in the config map that need it
 	obscureFields, ok := config.Get("_obscure")
 	if ok {
-		for _, key := range strings.Split(obscureFields, ",") {
+		for key := range strings.SplitSeq(obscureFields, ",") {
 			value, ok := config.Get(key)
 			if ok {
 				obscuredValue, err := obscure.Obscure(value)

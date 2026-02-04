@@ -1,4 +1,4 @@
-//go:build !openbsd && !plan9
+﻿//go:build !openbsd && !plan9
 
 package local
 

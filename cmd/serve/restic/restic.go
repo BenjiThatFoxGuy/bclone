@@ -1,4 +1,4 @@
-// Package restic serves a remote suitable for use with restic
+﻿// Package restic serves a remote suitable for use with restic
 package restic
 
 import (

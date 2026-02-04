@@ -1,4 +1,4 @@
-// Package fs is a generic file system interface for rclone object storage systems
+﻿// Package fs is a generic file system interface for rclone object storage systems
 package fs
 
 import (

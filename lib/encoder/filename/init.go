@@ -1,4 +1,4 @@
-// Package filename provides utilities for encoder.
+﻿// Package filename provides utilities for encoder.
 package filename
 
 import (

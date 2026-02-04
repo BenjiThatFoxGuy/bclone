@@ -1,4 +1,4 @@
-//go:build !plan9 && !js
+﻿//go:build !plan9 && !js
 
 // Package cache implements a virtual provider to cache existing remotes.
 package cache
@@ -684,7 +684,7 @@ func (f *Fs) rcFetch(ctx context.Context, in rc.Params) (rc.Params, error) {
 		start, end int64
 	}
 	parseChunks := func(ranges string) (crs []chunkRange, err error) {
-		for _, part := range strings.Split(ranges, ",") {
+		for part := range strings.SplitSeq(ranges, ",") {
 			var start, end int64 = 0, math.MaxInt64
 			switch ints := strings.Split(part, ":"); len(ints) {
 			case 1:

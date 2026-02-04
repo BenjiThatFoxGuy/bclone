@@ -1,4 +1,4 @@
-package fs
+﻿package fs
 
 import (
 	"encoding/json"
@@ -151,7 +151,7 @@ func (x *BwTimetable) Set(s string) error {
 	}
 
 	// Split the timetable string by both spaces and semicolons
-	for _, tok := range strings.FieldsFunc(s, func(r rune) bool {
+	for tok := range strings.FieldsFuncSeq(s, func(r rune) bool {
 		return r == ' ' || r == ';'
 	}) {
 		tv := strings.Split(tok, ",")

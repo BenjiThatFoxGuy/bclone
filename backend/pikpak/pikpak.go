@@ -1,4 +1,4 @@
-// Package pikpak provides an interface to the PikPak
+﻿// Package pikpak provides an interface to the PikPak
 package pikpak
 
 // ------------------------------------------------------------

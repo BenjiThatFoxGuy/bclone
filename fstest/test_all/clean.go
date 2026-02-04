@@ -1,4 +1,4 @@
-// Clean the left over test files
+﻿// Clean the left over test files
 
 package main
 

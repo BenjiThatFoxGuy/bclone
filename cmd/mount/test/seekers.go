@@ -1,4 +1,4 @@
-//go:build ignore
+﻿//go:build ignore
 
 // Read lots files with lots of simultaneous seeking to stress test the seek code
 package main

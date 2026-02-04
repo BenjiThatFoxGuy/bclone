@@ -1,4 +1,4 @@
-// Generate boilerplate code for setting similar structs from each other
+﻿// Generate boilerplate code for setting similar structs from each other
 
 //go:build ignore
 

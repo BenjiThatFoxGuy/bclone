@@ -1,4 +1,4 @@
-// Package exitcode exports rclone's exit status numbers.
+﻿// Package exitcode exports rclone's exit status numbers.
 package exitcode
 
 const (

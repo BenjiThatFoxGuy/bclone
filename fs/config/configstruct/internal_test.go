@@ -1,4 +1,4 @@
-package configstruct
+﻿package configstruct
 
 import (
 	"testing"

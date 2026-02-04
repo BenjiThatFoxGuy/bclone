@@ -1,4 +1,4 @@
-//go:build !linux && (!darwin || !amd64)
+﻿//go:build !linux && (!darwin || !amd64)
 
 // Package mount2 implements a FUSE mounting system for rclone remotes.
 //

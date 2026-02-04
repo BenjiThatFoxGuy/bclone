@@ -1,4 +1,4 @@
-// Package pkcs7 implements PKCS#7 padding
+﻿// Package pkcs7 implements PKCS#7 padding
 //
 // This is a standard way of encoding variable length buffers into
 // buffers which are a multiple of an underlying crypto block size.

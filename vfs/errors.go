@@ -1,4 +1,4 @@
-// Cross platform errors
+﻿// Cross platform errors
 
 package vfs
 

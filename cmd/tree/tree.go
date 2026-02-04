@@ -1,4 +1,4 @@
-// Package tree provides the tree command.
+﻿// Package tree provides the tree command.
 package tree
 
 import (

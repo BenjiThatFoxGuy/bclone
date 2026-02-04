@@ -1,4 +1,4 @@
-// Package chunkedreader provides functionality for reading a stream in chunks.
+﻿// Package chunkedreader provides functionality for reading a stream in chunks.
 package chunkedreader
 
 import (

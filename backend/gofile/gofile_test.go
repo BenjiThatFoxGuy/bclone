@@ -1,4 +1,4 @@
-// Test Gofile filesystem interface
+﻿// Test Gofile filesystem interface
 package gofile_test
 
 import (

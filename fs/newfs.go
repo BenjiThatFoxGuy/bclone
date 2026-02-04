@@ -1,4 +1,4 @@
-// NewFs and its helpers
+﻿// NewFs and its helpers
 
 package fs
 

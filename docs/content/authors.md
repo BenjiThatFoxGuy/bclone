@@ -980,7 +980,6 @@ put them back in again.` >}}
 - Flora Thiebaut <johann.thiebaut@gmail.com>
 - kingston125 <support@filelu.com>
 - Ser-Bul <30335009+Ser-Bul@users.noreply.github.com>
-  * Benji Silver <git@benjifox.gay>
 - jinjingroad <jinjingroad@sina.com>
 - necaran <55765083+necaran@users.noreply.github.com>
 - Marvin Rösch <marvinroesch99@gmail.com>
@@ -991,7 +990,7 @@ put them back in again.` >}}
 - Ross Smith II <ross@smithii.com>
 - Vikas Bhansali <64532198+vibhansa-msft@users.noreply.github.com>
 - Sudipto Baral <sudiptobaral.me@gmail.com>
-- Sam Pegg <samrpegg@gmail.com>
+- Sam Pegg <samrpegg@gmail.com> <70067376+S-Pegg1@users.noreply.github.com>
 - liubingrun <liubr1@chinatelecom.cn>
 - Albin Parou <fumesover@gmail.com>
 - n4n5 <56606507+Its-Just-Nans@users.noreply.github.com>
@@ -1012,3 +1011,11 @@ put them back in again.` >}}
 - dougal <dougal.craigwood@gmail.com> <147946567+roucc@users.noreply.github.com>
 - anon-pradip <pradipsubedi360@gmail.com>
 - Robin Rolf <imer@imer.cc>
+- Jean-Christophe Cura <jcaspes@gmail.com>
+- russcoss <russcoss@outlook.com>
+- Matt LaPaglia <mlapaglia@gmail.com>
+- Youfu Zhang <1315097+zhangyoufu@users.noreply.github.com>
+- juejinyuxitu <juejinyuxitu@outlook.com>
+- iTrooz <hey@itrooz.fr>
+- Microscotch <github.com@microscotch.net>
+- Andrew Ruthven <andrew@etc.gen.nz>

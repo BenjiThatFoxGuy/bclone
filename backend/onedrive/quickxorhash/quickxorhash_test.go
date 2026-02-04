@@ -1,4 +1,4 @@
-package quickxorhash
+﻿package quickxorhash
 
 import (
 	"crypto/rand"
@@ -172,8 +172,8 @@ func BenchmarkQuickXorHash(b *testing.B) {
 	require.NoError(b, err)
 	require.Equal(b, len(buf), n)
 	h := New()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		h.Reset()
 		h.Write(buf)
 		h.Sum(nil)

@@ -1,4 +1,4 @@
-// Package putio provides an interface to the put.io storage system.
+﻿// Package putio provides an interface to the put.io storage system.
 package putio
 
 import (

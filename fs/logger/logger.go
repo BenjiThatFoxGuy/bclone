@@ -1,4 +1,4 @@
-// Package logger implements testing for the sync (and bisync) logger
+﻿// Package logger implements testing for the sync (and bisync) logger
 package logger
 
 import (

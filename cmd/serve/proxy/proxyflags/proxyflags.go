@@ -1,4 +1,4 @@
-// Package proxyflags implements command line flags to set up a proxy
+﻿// Package proxyflags implements command line flags to set up a proxy
 package proxyflags
 
 import (

@@ -1,4 +1,4 @@
-// Package chunker provides wrappers for Fs and Object which split large files in chunks
+﻿// Package chunker provides wrappers for Fs and Object which split large files in chunks
 package chunker
 
 import (

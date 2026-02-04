@@ -1,4 +1,4 @@
-// Define the internal rc functions
+﻿// Define the internal rc functions
 
 package rc
 

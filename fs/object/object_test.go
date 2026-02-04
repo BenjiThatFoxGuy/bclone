@@ -1,4 +1,4 @@
-package object_test
+﻿package object_test
 
 import (
 	"bytes"

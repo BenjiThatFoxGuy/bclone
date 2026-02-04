@@ -1,4 +1,4 @@
-// Filesystem related types and interfaces
+﻿// Filesystem related types and interfaces
 // Note that optional interfaces are found in features.go
 
 package fs

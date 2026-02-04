@@ -1,4 +1,4 @@
-// Package size provides the size command.
+﻿// Package size provides the size command.
 package size
 
 import (

@@ -1,4 +1,4 @@
-// Package errcount provides an easy to use error counter which
+﻿// Package errcount provides an easy to use error counter which
 // returns error count and last error so as to not overwhelm the user
 // with errors.
 package errcount

@@ -1,4 +1,4 @@
-// Package fserrors provides errors and error handling
+﻿// Package fserrors provides errors and error handling
 package fserrors
 
 import (

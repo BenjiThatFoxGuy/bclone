@@ -1,4 +1,4 @@
-// Package fstests provides generic integration tests for the Fs and
+﻿// Package fstests provides generic integration tests for the Fs and
 // Object interfaces.
 //
 // These tests are concerned with the basic functionality of a

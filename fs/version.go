@@ -1,4 +1,4 @@
-package fs
+﻿package fs
 
 // Version of rclone containing the complete version string
 var Version string

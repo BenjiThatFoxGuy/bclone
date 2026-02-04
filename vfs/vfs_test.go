@@ -1,4 +1,4 @@
-// Test suite for vfs
+﻿// Test suite for vfs
 
 package vfs
 

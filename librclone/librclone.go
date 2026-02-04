@@ -1,4 +1,4 @@
-// Package librclone exports shims for C library use
+﻿// Package librclone exports shims for C library use
 //
 // This directory contains code to build rclone as a C library and the
 // shims for accessing rclone from C.

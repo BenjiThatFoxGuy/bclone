@@ -1,4 +1,4 @@
-// Test the VFS to exhaustion, specifically looking for deadlocks
+﻿// Test the VFS to exhaustion, specifically looking for deadlocks
 //
 // Run on a mounted filesystem
 package main

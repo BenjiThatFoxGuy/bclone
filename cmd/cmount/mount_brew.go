@@ -1,4 +1,4 @@
-//go:build brew && darwin
+﻿//go:build brew && darwin
 
 // Package cmount implements a FUSE mounting system for rclone remotes.
 //

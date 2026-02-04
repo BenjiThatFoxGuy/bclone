@@ -1,4 +1,4 @@
-package smb
+﻿package smb
 
 import (
 	"context"

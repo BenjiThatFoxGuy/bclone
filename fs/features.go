@@ -1,4 +1,4 @@
-// Filesystem features and optional interfaces
+﻿// Filesystem features and optional interfaces
 
 package fs
 

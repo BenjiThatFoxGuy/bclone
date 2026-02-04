@@ -1,4 +1,4 @@
-//go:build netbsd
+﻿//go:build netbsd
 
 package diskusage
 

@@ -1,4 +1,4 @@
-// Package pool implements a memory pool similar in concept to
+﻿// Package pool implements a memory pool similar in concept to
 // sync.Pool but with more determinism.
 package pool
 

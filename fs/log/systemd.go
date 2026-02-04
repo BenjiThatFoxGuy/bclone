@@ -1,4 +1,4 @@
-// Systemd interface for non-Unix variants only
+﻿// Systemd interface for non-Unix variants only
 
 //go:build !unix
 

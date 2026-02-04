@@ -1,4 +1,4 @@
-// Package config reads, writes and edits the config file and deals with command line flags
+﻿// Package config reads, writes and edits the config file and deals with command line flags
 package config
 
 import (

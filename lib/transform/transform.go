@@ -1,4 +1,4 @@
-// Package transform holds functions for path name transformations
+﻿// Package transform holds functions for path name transformations
 //
 //go:generate go run gen_help.go transform.md
 package transform

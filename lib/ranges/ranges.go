@@ -1,4 +1,4 @@
-// Package ranges provides the Ranges type for keeping track of byte
+﻿// Package ranges provides the Ranges type for keeping track of byte
 // ranges which may or may not be present in an object.
 package ranges
 

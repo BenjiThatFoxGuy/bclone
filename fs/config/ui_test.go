@@ -1,4 +1,4 @@
-// These are in an external package because we need to import configfile
+﻿// These are in an external package because we need to import configfile
 //
 // Internal tests are in ui_internal_test.go
 

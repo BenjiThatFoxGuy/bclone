@@ -1,4 +1,4 @@
-// Package configflags defines the flags used by rclone.  It is
+﻿// Package configflags defines the flags used by rclone.  It is
 // decoupled into a separate package so it can be replaced.
 package configflags
 

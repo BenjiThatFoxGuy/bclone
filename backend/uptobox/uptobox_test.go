@@ -1,4 +1,4 @@
-// Test Uptobox filesystem interface
+﻿// Test Uptobox filesystem interface
 package uptobox_test
 
 import (

@@ -1,4 +1,4 @@
-package sugarsync
+﻿package sugarsync
 
 import (
 	"bytes"

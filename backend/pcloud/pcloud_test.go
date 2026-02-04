@@ -1,4 +1,4 @@
-// Test Pcloud filesystem interface
+﻿// Test Pcloud filesystem interface
 package pcloud_test
 
 import (

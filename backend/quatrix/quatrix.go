@@ -1,4 +1,4 @@
-// Package quatrix provides an interface to the Quatrix by Maytech
+﻿// Package quatrix provides an interface to the Quatrix by Maytech
 // object storage system.
 package quatrix
 

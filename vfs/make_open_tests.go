@@ -1,4 +1,4 @@
-// This makes the open test suite. It tries to open a file (existing
+﻿// This makes the open test suite. It tries to open a file (existing
 // or not existing) with all possible file modes and writes a test
 // matrix.
 //

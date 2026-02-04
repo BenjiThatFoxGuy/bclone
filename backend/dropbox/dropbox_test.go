@@ -1,4 +1,4 @@
-// Test Dropbox filesystem interface
+﻿// Test Dropbox filesystem interface
 package dropbox
 
 import (

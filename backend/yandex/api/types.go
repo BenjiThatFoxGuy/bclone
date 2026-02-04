@@ -1,4 +1,4 @@
-// Package api provides types used by the Yandex API.
+﻿// Package api provides types used by the Yandex API.
 package api
 
 import (

@@ -1,4 +1,4 @@
-// Daemonization stub for non-Unix platforms (common definitions)
+﻿// Daemonization stub for non-Unix platforms (common definitions)
 
 //go:build windows || plan9 || js
 

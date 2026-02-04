@@ -1,4 +1,4 @@
-// environment_test tests the use and precedence of environment variables
+﻿// environment_test tests the use and precedence of environment variables
 //
 // The tests rely on functions defined in cmdtest_test.go
 
@@ -351,7 +351,7 @@ func TestEnvironmentVariables(t *testing.T) {
 	parseFileFilters := func(out string) (extensions []string) {
 		// Match: - (^|/)[^/]*\.jpg$
 		find := regexp.MustCompile(`^- \(\^\|\/\)\[\^\/\]\*\\\.(.*?)\$$`)
-		for _, line := range strings.Split(out, "\n") {
+		for line := range strings.SplitSeq(out, "\n") {
 			if m := find.FindStringSubmatch(line); m != nil {
 				extensions = append(extensions, m[1])
 			}

@@ -1,4 +1,4 @@
-// Package gitannex provides the "gitannex" command, which enables [git-annex]
+﻿// Package gitannex provides the "gitannex" command, which enables [git-annex]
 // to communicate with rclone by implementing the [external special remote
 // protocol]. The protocol is line delimited and spoken over stdin and stdout.
 //

@@ -1,4 +1,4 @@
-// Package librclone exports shims for library use
+﻿// Package librclone exports shims for library use
 //
 // This is the internal implementation which is used for C and
 // Gomobile libraries which need slightly different export styles.

@@ -1,4 +1,4 @@
-// Test 1Fichier filesystem interface
+﻿// Test 1Fichier filesystem interface
 package fichier
 
 import (

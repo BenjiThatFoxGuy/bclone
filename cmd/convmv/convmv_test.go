@@ -1,4 +1,4 @@
-// Package convmv provides the convmv command.
+﻿// Package convmv provides the convmv command.
 package convmv
 
 import (
@@ -152,7 +152,7 @@ func makeTestFiles(t *testing.T, r *fstest.Run, dir string) []fstest.Item {
 	items := []fstest.Item{}
 	for _, c := range alphabet {
 		var out strings.Builder
-		for i := rune(0); i < 7; i++ {
+		for i := range rune(7) {
 			out.WriteRune(c + i)
 		}
 		fileName := path.Join(dir, fmt.Sprintf("%04d-%s.txt", n, out.String()))

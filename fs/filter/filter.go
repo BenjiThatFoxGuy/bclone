@@ -1,4 +1,4 @@
-// Package filter controls the filtering of files
+﻿// Package filter controls the filtering of files
 package filter
 
 import (

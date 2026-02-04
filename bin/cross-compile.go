@@ -1,4 +1,4 @@
-//go:build ignore
+﻿//go:build ignore
 
 // Cross compile rclone - in go because I hate bash ;-)
 

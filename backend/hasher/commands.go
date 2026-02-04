@@ -1,4 +1,4 @@
-package hasher
+﻿package hasher
 
 import (
 	"context"

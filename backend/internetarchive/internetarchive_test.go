@@ -1,4 +1,4 @@
-// Test internetarchive filesystem interface
+﻿// Test internetarchive filesystem interface
 package internetarchive_test
 
 import (

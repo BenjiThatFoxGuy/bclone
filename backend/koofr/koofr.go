@@ -1,4 +1,4 @@
-// Package koofr provides an interface to the Koofr storage system.
+﻿// Package koofr provides an interface to the Koofr storage system.
 package koofr
 
 import (

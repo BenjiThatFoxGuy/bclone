@@ -1,4 +1,4 @@
-// Test the Chunker filesystem interface
+﻿// Test the Chunker filesystem interface
 package chunker_test
 
 import (

@@ -1,4 +1,4 @@
-package info
+﻿package info
 
 // Create files with all possible base 32768 file names
 
@@ -34,7 +34,7 @@ func (r *results) checkBase32768() {
 	// Create test files
 	for _, c := range safeAlphabet {
 		var out strings.Builder
-		for i := rune(0); i < 32; i++ {
+		for i := range rune(32) {
 			out.WriteRune(c + i)
 		}
 		fileName := filepath.Join(dir, fmt.Sprintf("%04d-%s.txt", n, out.String()))

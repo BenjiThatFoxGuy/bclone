@@ -1,4 +1,4 @@
-// Package bisync implements bisync
+﻿// Package bisync implements bisync
 // Copyright (c) 2017-2020 Chris Nelson
 // Contributions to original python version: Hildo G. Jr., e2t, kalemas, silenceleaf
 package bisync

@@ -1,4 +1,4 @@
-// Package memory provides the memory test command.
+﻿// Package memory provides the memory test command.
 package memory
 
 import (

@@ -1,4 +1,4 @@
-// Package batcher implements a generic batcher.
+﻿// Package batcher implements a generic batcher.
 //
 // It uses two types:
 //

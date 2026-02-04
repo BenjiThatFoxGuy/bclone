@@ -1,4 +1,4 @@
-// Package http provides a filesystem interface using golang.org/net/http
+﻿// Package http provides a filesystem interface using golang.org/net/http
 //
 // It treats HTML pages served from the endpoint as directory
 // listings, and includes any links found as files.

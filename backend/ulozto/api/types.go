@@ -1,4 +1,4 @@
-// Package api has type definitions for uloz.to
+﻿// Package api has type definitions for uloz.to
 package api
 
 import (

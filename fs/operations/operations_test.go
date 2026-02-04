@@ -1,4 +1,4 @@
-// Integration tests - test rclone by doing real transactions to a
+﻿// Integration tests - test rclone by doing real transactions to a
 // storage provider to and from the local disk.
 //
 // By default it will use a local fs, however you can provide a

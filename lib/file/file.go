@@ -1,4 +1,4 @@
-// Package file provides a version of os.OpenFile, the handles of
+﻿// Package file provides a version of os.OpenFile, the handles of
 // which can be renamed and deleted under Windows.
 package file
 

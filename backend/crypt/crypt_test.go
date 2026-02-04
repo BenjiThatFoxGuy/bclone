@@ -1,4 +1,4 @@
-// Test Crypt filesystem interface
+﻿// Test Crypt filesystem interface
 package crypt_test
 
 import (

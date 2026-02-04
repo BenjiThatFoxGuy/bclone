@@ -1,4 +1,4 @@
-// Package move provides the move command.
+﻿// Package move provides the move command.
 package move
 
 import (

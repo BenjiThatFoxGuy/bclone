@@ -1,4 +1,4 @@
-package fichier
+﻿package fichier
 
 // FileInfoRequest is the request structure of the corresponding request
 type FileInfoRequest struct {

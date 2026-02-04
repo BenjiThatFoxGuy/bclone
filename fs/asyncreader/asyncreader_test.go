@@ -1,4 +1,4 @@
-package asyncreader
+﻿package asyncreader
 
 import (
 	"bufio"

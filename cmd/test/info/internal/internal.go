@@ -1,4 +1,4 @@
-// Package internal provides internal implementation for the info test command.
+﻿// Package internal provides internal implementation for the info test command.
 package internal
 
 import (
@@ -95,7 +95,7 @@ func (e *Position) UnmarshalText(text []byte) error {
 	switch s := strings.ToLower(string(text)); s {
 	default:
 		*e = PositionNone
-		for _, p := range strings.Split(s, ",") {
+		for p := range strings.SplitSeq(s, ",") {
 			switch p {
 			case "left":
 				*e |= PositionLeft

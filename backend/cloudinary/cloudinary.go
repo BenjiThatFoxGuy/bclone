@@ -1,4 +1,4 @@
-// Package cloudinary provides an interface to the Cloudinary DAM
+﻿// Package cloudinary provides an interface to the Cloudinary DAM
 package cloudinary
 
 import (

@@ -1,4 +1,4 @@
-package gitannex
+﻿package gitannex
 
 import (
 	"fmt"

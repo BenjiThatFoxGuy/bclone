@@ -1,4 +1,4 @@
-// Package sync is the implementation of sync/copy/move
+﻿// Package sync is the implementation of sync/copy/move
 package sync
 
 import (
@@ -743,7 +743,7 @@ func parseTrackRenamesStrategy(strategies string) (strategy trackRenamesStrategy
 	if len(strategies) == 0 {
 		return strategy, nil
 	}
-	for _, s := range strings.Split(strategies, ",") {
+	for s := range strings.SplitSeq(strategies, ",") {
 		switch s {
 		case "hash":
 			strategy |= trackRenamesStrategyHash

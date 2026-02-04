@@ -1,4 +1,4 @@
-// Package log provides logging for rclone
+﻿// Package log provides logging for rclone
 package log
 
 import (

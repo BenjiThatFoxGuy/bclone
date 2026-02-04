@@ -1,4 +1,4 @@
-// Test AzureBlob filesystem interface
+﻿// Test AzureBlob filesystem interface
 
 //go:build !plan9 && !solaris && !js
 

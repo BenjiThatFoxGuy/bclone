@@ -1,4 +1,4 @@
-// Package hidrivehash implements the HiDrive hashing algorithm which combines SHA-1 hashes hierarchically to a single top-level hash.
+﻿// Package hidrivehash implements the HiDrive hashing algorithm which combines SHA-1 hashes hierarchically to a single top-level hash.
 //
 // Note: This implementation does not grant access to any partial hashes generated.
 //

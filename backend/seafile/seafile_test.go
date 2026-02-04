@@ -1,4 +1,4 @@
-// Test Seafile filesystem interface
+﻿// Test Seafile filesystem interface
 package seafile_test
 
 import (

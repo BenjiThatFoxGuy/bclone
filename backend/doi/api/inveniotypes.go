@@ -1,4 +1,4 @@
-// Type definitions specific to InvenioRDM
+﻿// Type definitions specific to InvenioRDM
 
 package api
 

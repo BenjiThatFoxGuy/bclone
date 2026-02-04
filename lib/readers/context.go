@@ -1,4 +1,4 @@
-// Package readers provides io.Reader related utilities.
+﻿// Package readers provides io.Reader related utilities.
 package readers
 
 import (

@@ -1,4 +1,4 @@
-// Package api provides types used by the Mail.ru API.
+﻿// Package api provides types used by the Mail.ru API.
 package api
 
 import (

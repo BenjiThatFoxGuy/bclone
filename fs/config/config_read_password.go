@@ -1,4 +1,4 @@
-// ReadPassword for OSes which are supported by golang.org/x/term
+﻿// ReadPassword for OSes which are supported by golang.org/x/term
 // See https://github.com/golang/go/issues/14441 - plan9
 
 //go:build !plan9

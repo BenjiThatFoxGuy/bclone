@@ -1,4 +1,4 @@
-// Config handling
+﻿// Config handling
 
 // Package runs provides the types used by test_all
 package runs

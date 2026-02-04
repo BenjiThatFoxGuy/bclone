@@ -1,4 +1,4 @@
-// Package pixeldrain provides an interface to the Pixeldrain object storage
+﻿// Package pixeldrain provides an interface to the Pixeldrain object storage
 // system.
 package pixeldrain
 

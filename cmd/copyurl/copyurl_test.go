@@ -1,4 +1,4 @@
-package copyurl
+﻿package copyurl
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-//go:build unix && linux
+﻿//go:build unix && linux
 
 /*
 This implements an efficient disk cache for the NFS file handles for

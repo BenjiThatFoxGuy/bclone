@@ -1,4 +1,4 @@
-// Package flags contains enhanced versions of spf13/pflag flag
+﻿// Package flags contains enhanced versions of spf13/pflag flag
 // routines which will read from the environment also.
 package flags
 
@@ -70,7 +70,7 @@ func (gs *Groups) Include(groupsString string) *Groups {
 		return gs
 	}
 	want := map[string]bool{}
-	for _, groupName := range strings.Split(groupsString, ",") {
+	for groupName := range strings.SplitSeq(groupsString, ",") {
 		_, ok := All.ByName[groupName]
 		if !ok {
 			fs.Fatalf(nil, "Couldn't find group %q in command annotation", groupName)
@@ -173,7 +173,7 @@ func installFlag(flags *pflag.FlagSet, name string, groupsString string) {
 
 	// Add flag to Group if it is a global flag
 	if groupsString != "" && flags == pflag.CommandLine {
-		for _, groupName := range strings.Split(groupsString, ",") {
+		for groupName := range strings.SplitSeq(groupsString, ",") {
 			if groupName == "rc-" {
 				groupName = "RC"
 			}

@@ -1,4 +1,4 @@
-package dbhash_test
+﻿package dbhash_test
 
 import (
 	"encoding/hex"

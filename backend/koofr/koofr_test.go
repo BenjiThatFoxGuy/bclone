@@ -1,4 +1,4 @@
-package koofr_test
+﻿package koofr_test
 
 import (
 	"testing"

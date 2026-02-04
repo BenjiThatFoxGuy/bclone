@@ -1,4 +1,4 @@
-// Test Cloudinary filesystem interface
+﻿// Test Cloudinary filesystem interface
 
 package cloudinary_test
 

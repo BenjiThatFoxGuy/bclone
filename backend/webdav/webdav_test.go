@@ -1,4 +1,4 @@
-// Test Webdav filesystem interface
+﻿// Test Webdav filesystem interface
 package webdav
 
 import (

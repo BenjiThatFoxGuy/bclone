@@ -1,4 +1,4 @@
-//go:build unix
+﻿//go:build unix
 
 // Package daemonize provides daemonization interface for Unix platforms.
 package daemonize

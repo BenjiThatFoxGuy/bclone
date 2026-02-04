@@ -1,4 +1,4 @@
-// For unsupported architectures
+﻿// For unsupported architectures
 //go:build !unix
 
 // Package nfs is not supported on non-Unix platforms

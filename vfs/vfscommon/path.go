@@ -1,4 +1,4 @@
-package vfscommon
+﻿package vfscommon
 
 import (
 	"path"

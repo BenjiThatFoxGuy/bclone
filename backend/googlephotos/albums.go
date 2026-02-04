@@ -1,4 +1,4 @@
-// This file contains the albums abstraction
+﻿// This file contains the albums abstraction
 
 package googlephotos
 

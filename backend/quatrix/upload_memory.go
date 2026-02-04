@@ -1,4 +1,4 @@
-package quatrix
+﻿package quatrix
 
 import (
 	"sync"
@@ -59,11 +59,7 @@ func (u *UploadMemoryManager) Consume(fileID string, neededMemory int64, speed f
 
 	defer func() { u.fileUsage[fileID] = borrowed }()
 
-	effectiveChunkSize := max(int64(speed*u.effectiveTime.Seconds()), u.reserved)
-
-	if neededMemory < effectiveChunkSize {
-		effectiveChunkSize = neededMemory
-	}
+	effectiveChunkSize := min(neededMemory, max(int64(speed*u.effectiveTime.Seconds()), u.reserved))
 
 	if effectiveChunkSize <= u.reserved {
 		return effectiveChunkSize

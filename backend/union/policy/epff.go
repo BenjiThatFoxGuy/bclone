@@ -1,4 +1,4 @@
-package policy
+﻿package policy
 
 import (
 	"context"
@@ -21,7 +21,6 @@ func (p *EpFF) epff(ctx context.Context, upstreams []*upstream.Fs, filePath stri
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	for _, u := range upstreams {
-		u := u // Closure
 		go func() {
 			rfs := u.RootFs
 			remote := path.Join(u.RootPath, filePath)

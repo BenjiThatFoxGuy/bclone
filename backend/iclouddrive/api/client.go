@@ -1,4 +1,4 @@
-// Package api provides functionality for interacting with the iCloud API.
+﻿// Package api provides functionality for interacting with the iCloud API.
 package api
 
 import (

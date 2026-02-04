@@ -1,4 +1,4 @@
-// Test DOI filesystem interface
+﻿// Test DOI filesystem interface
 package doi
 
 import (

@@ -1,4 +1,4 @@
-package fs
+﻿package fs
 
 // CountSuffix is parsed by flag with k/M/G decimal suffixes
 import (

@@ -1,4 +1,4 @@
-// Pacer with logging and calculator
+﻿// Pacer with logging and calculator
 
 package fs
 

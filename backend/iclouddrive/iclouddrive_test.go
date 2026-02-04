@@ -1,4 +1,4 @@
-//go:build !plan9 && !solaris
+﻿//go:build !plan9 && !solaris
 
 package iclouddrive_test
 

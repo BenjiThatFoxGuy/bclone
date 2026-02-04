@@ -1,4 +1,4 @@
-//go:build cmount && ((linux && cgo) || (darwin && cgo) || (freebsd && cgo) || windows) && (!race || !windows)
+﻿//go:build cmount && ((linux && cgo) || (darwin && cgo) || (freebsd && cgo) || windows) && (!race || !windows)
 
 // Package cmount implements a FUSE mounting system for rclone remotes.
 //

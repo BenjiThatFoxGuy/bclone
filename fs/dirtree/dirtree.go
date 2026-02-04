@@ -1,4 +1,4 @@
-// Package dirtree contains the DirTree type which is used for
+﻿// Package dirtree contains the DirTree type which is used for
 // building filesystem hierarchies in memory.
 package dirtree
 

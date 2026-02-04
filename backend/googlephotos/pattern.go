@@ -1,4 +1,4 @@
-// Store the parsing of file patterns
+﻿// Store the parsing of file patterns
 
 package googlephotos
 

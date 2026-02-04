@@ -1,4 +1,4 @@
-package errcount
+﻿package errcount
 
 import (
 	"errors"

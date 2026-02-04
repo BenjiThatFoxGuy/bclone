@@ -1,4 +1,4 @@
-// Test Mega filesystem interface
+﻿// Test Mega filesystem interface
 package mega_test
 
 import (

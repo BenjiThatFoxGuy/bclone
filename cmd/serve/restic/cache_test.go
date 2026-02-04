@@ -1,4 +1,4 @@
-package restic
+﻿package restic
 
 import (
 	"sort"

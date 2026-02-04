@@ -1,4 +1,4 @@
-// Package env contains functions for dealing with environment variables
+﻿// Package env contains functions for dealing with environment variables
 package env
 
 import (

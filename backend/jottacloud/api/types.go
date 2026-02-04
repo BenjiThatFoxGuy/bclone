@@ -1,4 +1,4 @@
-// Package api provides types used by the Jottacloud API.
+﻿// Package api provides types used by the Jottacloud API.
 package api
 
 import (

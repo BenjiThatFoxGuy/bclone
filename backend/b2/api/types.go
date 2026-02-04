@@ -1,4 +1,4 @@
-// Package api provides types used by the Backblaze B2 API.
+﻿// Package api provides types used by the Backblaze B2 API.
 package api
 
 import (

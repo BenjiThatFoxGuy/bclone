@@ -1,4 +1,4 @@
-// Serve sftp tests set up a server and run the integration tests
+﻿// Serve sftp tests set up a server and run the integration tests
 // for the sftp remote against it.
 //
 // We skip tests on platforms with troublesome character mappings

@@ -1,4 +1,4 @@
-//go:build !plan9 && !solaris
+﻿//go:build !plan9 && !solaris
 
 // Package iclouddrive provides access to iCloud Drive and Photos
 package iclouddrive

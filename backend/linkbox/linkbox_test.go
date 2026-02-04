@@ -1,4 +1,4 @@
-// Test Linkbox filesystem interface
+﻿// Test Linkbox filesystem interface
 package linkbox_test
 
 import (
