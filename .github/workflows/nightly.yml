@@ -3,7 +3,7 @@ name: nightly
 on:
   push:
     branches:
-      - master
+      - main
 
 env:
   IMAGE: benjithatfoxguy/bclone
