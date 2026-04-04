@@ -9,7 +9,7 @@ env:
   IMAGE: benjithatfoxguy/bclone
 
 concurrency:
-  group: nightly-${{ github.sha }}
+  group: nightly-master
   cancel-in-progress: true
 
 jobs:
@@ -170,6 +170,11 @@ jobs:
         run: |
           mkdir build
           cp -r /tmp/build/* build/
+
+      - name: Force-update nightly tag to current commit
+        run: |
+          git tag -f nightly ${{ github.sha }}
+          git push origin -f refs/tags/nightly
 
       - name: Create or Update Nightly Release
         uses: softprops/action-gh-release@v2
