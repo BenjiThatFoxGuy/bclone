@@ -142,11 +142,22 @@ jobs:
     needs: [build]
     permissions:
       contents: write
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.24.0-rc.1'
+          check-latest: true
+
+      - name: Get build tag
+        id: get_tag
+        run: echo "tag=$(make -s version)" >> $GITHUB_OUTPUT
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v5
@@ -163,13 +174,40 @@ jobs:
       - name: Create or Update Nightly Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Nightly
+          name: Nightly (${{ steps.get_tag.outputs.tag }})
           tag_name: nightly
           prerelease: true
           body: |
             Nightly build from master branch.
+            Version: ${{ steps.get_tag.outputs.tag }}
             Commit: ${{ github.sha }}
             Built at: ${{ github.event.head_commit.timestamp }}
           files: build/**/*
           fail_on_unmatched_files: false
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          build-args: |
+            VERSION=${{ steps.get_tag.outputs.tag }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.get_tag.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ env.IMAGE }}
+            org.opencontainers.image.description=bclone nightly Docker image
+          tags: |
+            ghcr.io/${{ env.IMAGE }}:nightly
