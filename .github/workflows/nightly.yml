@@ -28,6 +28,7 @@ jobs:
       - name: Check for open PR
         id: check_pr
         uses: actions/github-script@v7
+        if: github.event_name == 'push'
         with:
           script: |
             const branch = context.ref.replace('refs/heads/', '');
@@ -41,25 +42,31 @@ jobs:
 
       - name: Determine matrix and build platforms
         id: config
-        env:
-          HAS_OPEN_PR: ${{ steps.check_pr.outputs.result }}
         run: |
           IS_PR="false"
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$HAS_OPEN_PR" = "true" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             IS_PR="true"
-            echo 'is_nightly=false' >> "$GITHUB_OUTPUT"
-            echo 'matrix=["linux"]' >> "$GITHUB_OUTPUT"
-            echo 'build_platforms=^(linux/amd64|linux/arm64)' >> "$GITHUB_OUTPUT"
-          elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            echo 'is_nightly=true' >> "$GITHUB_OUTPUT"
-            echo 'matrix=["linux","windows","mac_amd64","mac_arm64"]' >> "$GITHUB_OUTPUT"
-            echo 'build_platforms=^(linux/amd64|linux/arm64|linux/arm-v7)' >> "$GITHUB_OUTPUT"
+            MATRIX='["linux"]'
+            BUILD_PLATFORMS='^(linux/amd64|linux/arm64)'
           else
-            echo 'is_nightly=false' >> "$GITHUB_OUTPUT"
-            echo 'matrix=["linux","windows","mac_amd64","mac_arm64"]' >> "$GITHUB_OUTPUT"
-            echo 'build_platforms=^(linux/amd64|linux/arm64|linux/arm-v7)' >> "$GITHUB_OUTPUT"
+            HAS_OPEN_PR="${{ steps.check_pr.outputs.result }}"
+            if [ "$HAS_OPEN_PR" = "true" ]; then
+              IS_PR="true"
+              MATRIX='["linux"]'
+              BUILD_PLATFORMS='^(linux/amd64|linux/arm64)'
+            elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
+              IS_NIGHTLY="true"
+              MATRIX='["linux","windows","mac_amd64","mac_arm64"]'
+              BUILD_PLATFORMS='^(linux/amd64|linux/arm64|linux/arm-v7)'
+            else
+              MATRIX='["linux","windows","mac_amd64","mac_arm64"]'
+              BUILD_PLATFORMS='^(linux/amd64|linux/arm64|linux/arm-v7)'
+            fi
           fi
           echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
+          echo "is_nightly=${IS_NIGHTLY:-false}" >> "$GITHUB_OUTPUT"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "build_platforms=$BUILD_PLATFORMS" >> "$GITHUB_OUTPUT"
 
   build:
     timeout-minutes: 60
