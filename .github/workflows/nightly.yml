@@ -322,7 +322,6 @@ jobs:
       - name: Determine Docker tag and platforms
         id: docker_config
         run: |
-          PLATFORMS="linux/amd64,linux/arm64,linux/arm/v7"
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             TAG="pr-${{ github.event.pull_request.number }}"
             PLATFORMS="linux/amd64,linux/arm64"
@@ -330,6 +329,7 @@ jobs:
             TAG="${GITHUB_REF#refs/heads/}"
             TAG="${TAG#refs/tags/}"
             TAG="${TAG//\//-}"
+            PLATFORMS="linux/amd64,linux/arm64"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
