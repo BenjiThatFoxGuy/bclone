@@ -1,24 +1,43 @@
-name: nightly
+name: snapshot
 
 on:
   push:
     branches:
-      - main
+      - '**'
 
 env:
   IMAGE: benjithatfoxguy/bclone
 
 concurrency:
-  group: nightly-master
+  group: snapshot-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
+  setup:
+    name: Determine build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      is_nightly: ${{ steps.config.outputs.is_nightly }}
+    steps:
+      - name: Determine matrix and nightly flag
+        id: config
+        run: |
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            echo 'is_nightly=true' >> "$GITHUB_OUTPUT"
+            echo 'matrix=["linux","windows","mac_amd64","mac_arm64"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'is_nightly=false' >> "$GITHUB_OUTPUT"
+            echo 'matrix=["linux"]' >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     timeout-minutes: 60
+    needs: [setup]
     strategy:
       fail-fast: false
       matrix:
-        job_name: ['linux', 'windows']
+        job_name: ${{ fromJSON(needs.setup.outputs.matrix) }}
 
         include:
           - job_name: linux
@@ -138,11 +157,11 @@ jobs:
 
   release:
     name: Create Nightly Release
+    if: needs.setup.outputs.is_nightly == 'true'
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [setup, build]
     permissions:
       contents: write
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -191,6 +210,45 @@ jobs:
           fail_on_unmatched_files: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  docker:
+    name: Build and push Docker image
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    permissions:
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.24.0-rc.1'
+          check-latest: true
+
+      - name: Get build tag
+        id: get_tag
+        run: echo "tag=$(make -s version)" >> $GITHUB_OUTPUT
+
+      - name: Determine Docker tag
+        id: docker_tag
+        run: |
+          TAG="${GITHUB_REF#refs/heads/}"
+          TAG="${TAG//\//-}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: /tmp/build
+          pattern: bclone-*
+          merge-multiple: true
+
+      - name: Copy Artifacts
+        run: |
+          mkdir build
+          cp -r /tmp/build/* build/
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -213,6 +271,6 @@ jobs:
             org.opencontainers.image.version=${{ steps.get_tag.outputs.tag }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=${{ env.IMAGE }}
-            org.opencontainers.image.description=bclone nightly Docker image
+            org.opencontainers.image.description=bclone snapshot Docker image
           tags: |
-            ghcr.io/${{ env.IMAGE }}:nightly
+            ghcr.io/${{ env.IMAGE }}:${{ steps.docker_tag.outputs.tag }}
