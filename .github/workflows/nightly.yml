@@ -160,7 +160,7 @@ jobs:
         run: echo "tag=$(make -s version)" >> $GITHUB_OUTPUT
 
       - name: Download All Artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/build
           pattern: bclone-*
