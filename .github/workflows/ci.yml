@@ -23,7 +23,6 @@ jobs:
       matrix: ${{ steps.config.outputs.matrix }}
       is_nightly: ${{ steps.config.outputs.is_nightly }}
       is_pr: ${{ steps.config.outputs.is_pr }}
-      build_platforms: ${{ steps.config.outputs.build_platforms }}
     steps:
       - name: Check for open PR
         id: check_pr
@@ -46,26 +45,24 @@ jobs:
           CHECK_PR_RESULT: ${{ steps.check_pr.outputs.result }}
         run: |
           IS_PR="false"
-          MATRIX='["linux","windows","mac_amd64","mac_arm64"]'
-          BUILD_PLATFORMS='^(linux/amd64|linux/arm64|linux/arm-v7)'
           IS_NIGHTLY="false"
 
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             IS_PR="true"
-            MATRIX='["linux"]'
-            BUILD_PLATFORMS='^(linux/amd64|linux/arm64)'
+            MATRIX='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64)\""}]'
           elif [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$CHECK_PR_RESULT" = "true" ]; then
             IS_PR="true"
-            MATRIX='["linux"]'
-            BUILD_PLATFORMS='^(linux/amd64|linux/arm64)'
+            MATRIX='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64)\""}]'
           elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
             IS_NIGHTLY="true"
+            MATRIX='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64|linux/arm-v7)\""},{"job_name":"windows","os":"windows-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(windows/amd64|windows/arm64)\"","build_args":"-buildmode exe"},{"job_name":"mac_amd64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/amd64\" -cgo"},{"job_name":"mac_arm64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/arm64\" -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib"}]'
+          else
+            MATRIX='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64|linux/arm-v7)\""},{"job_name":"windows","os":"windows-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(windows/amd64|windows/arm64)\"","build_args":"-buildmode exe"},{"job_name":"mac_amd64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/amd64\" -cgo"},{"job_name":"mac_arm64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/arm64\" -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib"}]'
           fi
 
           echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
           echo "is_nightly=$IS_NIGHTLY" >> "$GITHUB_OUTPUT"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "build_platforms=$BUILD_PLATFORMS" >> "$GITHUB_OUTPUT"
 
   build:
     timeout-minutes: 60
@@ -73,35 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job_name: ${{ fromJSON(needs.setup.outputs.matrix) }}
-
-        include:
-          - job_name: linux
-            os: ubuntu-latest
-            go: '>=1.24.0-rc.1'
-            gotags: cmount,noselfupdate
-            cgo: '0'
-            build_flags: '-include "^(linux/amd64|linux/arm64|linux/arm-v7)"'
-
-          - job_name: windows
-            os: windows-latest
-            go: '>=1.24.0-rc.1'
-            gotags: cmount,noselfupdate
-            cgo: '0'
-            build_flags: '-include "^(windows/amd64|windows/arm64)"'
-            build_args: '-buildmode exe'
-
-          - job_name: mac_amd64
-            os: macos-latest
-            go: '>=1.23.0-rc.1'
-            gotags: 'cmount,noselfupdate'
-            build_flags: '-include "^darwin/amd64" -cgo'
-
-          - job_name: mac_arm64
-            os: macos-latest
-            go: '>=1.23.0-rc.1'
-            gotags: 'cmount,noselfupdate'
-            build_flags: '-include "^darwin/arm64" -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib'
+        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
 
     name: ${{ matrix.job_name }}
 
@@ -140,12 +109,6 @@ jobs:
           echo 'BUILD_FLAGS=${{ matrix.build_flags }}' >> $GITHUB_ENV
           echo 'BUILD_ARGS=${{ matrix.build_args }}' >> $GITHUB_ENV
           if [[ "${{ matrix.cgo }}" != "" ]]; then echo 'CGO_ENABLED=${{ matrix.cgo }}' >> $GITHUB_ENV ; fi
-
-      - name: Override build platforms for Linux
-        shell: bash
-        if: matrix.job_name == 'linux'
-        run: |
-          echo 'BUILD_FLAGS=-include "${{ needs.setup.outputs.build_platforms }}"' >> $GITHUB_ENV
 
       - name: Install Libraries on Linux
         shell: bash
