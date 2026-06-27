@@ -22,12 +22,31 @@ jobs:
     outputs:
       matrix: ${{ steps.config.outputs.matrix }}
       is_nightly: ${{ steps.config.outputs.is_nightly }}
+      is_pr: ${{ steps.config.outputs.is_pr }}
       build_platforms: ${{ steps.config.outputs.build_platforms }}
     steps:
+      - name: Check for open PR
+        id: check_pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.ref.replace('refs/heads/', '');
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:${branch}`
+            });
+            return prs.data.length > 0;
+
       - name: Determine matrix and build platforms
         id: config
+        env:
+          HAS_OPEN_PR: ${{ steps.check_pr.outputs.result }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+          IS_PR="false"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] || [ "$HAS_OPEN_PR" = "true" ]; then
+            IS_PR="true"
             echo 'is_nightly=false' >> "$GITHUB_OUTPUT"
             echo 'matrix=["linux"]' >> "$GITHUB_OUTPUT"
             echo 'build_platforms=^(linux/amd64|linux/arm64)' >> "$GITHUB_OUTPUT"
@@ -40,6 +59,7 @@ jobs:
             echo 'matrix=["linux","windows","mac_amd64","mac_arm64"]' >> "$GITHUB_OUTPUT"
             echo 'build_platforms=^(linux/amd64|linux/arm64|linux/arm-v7)' >> "$GITHUB_OUTPUT"
           fi
+          echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
 
   build:
     timeout-minutes: 60
@@ -237,9 +257,9 @@ jobs:
 
   comment-artifacts:
     name: Comment artifacts on PR
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || needs.setup.outputs.is_pr == 'true'
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [setup, build]
     permissions:
       pull-requests: write
     steps:
