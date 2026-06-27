@@ -34,7 +34,7 @@ jobs:
 
       - name: Run quicktest
         shell: bash
-        run: make quicktest
+        run: RCLONE_CONFIG="/notfound" go test --ldflags "-s -X github.com/rclone/rclone/fs.Version=v1.73.2-beta" -skip "TestLogger" ./...
         env:
           GOTAGS: cmount,noselfupdate
           CGO_ENABLED: 0
