@@ -123,6 +123,17 @@ jobs:
           go-version: ${{ matrix.go }}
           check-latest: true
 
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.job_name }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.job_name }}-
+            ${{ runner.os }}-go-
+
       - name: Set environment variables
         shell: bash
         run: |
