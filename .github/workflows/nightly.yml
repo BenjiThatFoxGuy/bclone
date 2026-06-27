@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - '**'
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 env:
   IMAGE: benjithatfoxguy/bclone
@@ -157,7 +159,7 @@ jobs:
 
   release:
     name: Create Nightly Release
-    if: needs.setup.outputs.is_nightly == 'true'
+    if: needs.setup.outputs.is_nightly == 'true' && github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: [setup, build]
     permissions:
@@ -212,6 +214,7 @@ jobs:
 
   docker:
     name: Build and push Docker image
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: [setup, build]
     permissions:
