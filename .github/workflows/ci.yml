@@ -42,29 +42,28 @@ jobs:
 
       - name: Determine matrix and build platforms
         id: config
+        env:
+          CHECK_PR_RESULT: ${{ steps.check_pr.outputs.result }}
         run: |
           IS_PR="false"
+          MATRIX='["linux","windows","mac_amd64","mac_arm64"]'
+          BUILD_PLATFORMS='^(linux/amd64|linux/arm64|linux/arm-v7)'
+          IS_NIGHTLY="false"
+
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             IS_PR="true"
             MATRIX='["linux"]'
             BUILD_PLATFORMS='^(linux/amd64|linux/arm64)'
-          else
-            HAS_OPEN_PR="${{ steps.check_pr.outputs.result }}"
-            if [ "$HAS_OPEN_PR" = "true" ]; then
-              IS_PR="true"
-              MATRIX='["linux"]'
-              BUILD_PLATFORMS='^(linux/amd64|linux/arm64)'
-            elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
-              IS_NIGHTLY="true"
-              MATRIX='["linux","windows","mac_amd64","mac_arm64"]'
-              BUILD_PLATFORMS='^(linux/amd64|linux/arm64|linux/arm-v7)'
-            else
-              MATRIX='["linux","windows","mac_amd64","mac_arm64"]'
-              BUILD_PLATFORMS='^(linux/amd64|linux/arm64|linux/arm-v7)'
-            fi
+          elif [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$CHECK_PR_RESULT" = "true" ]; then
+            IS_PR="true"
+            MATRIX='["linux"]'
+            BUILD_PLATFORMS='^(linux/amd64|linux/arm64)'
+          elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            IS_NIGHTLY="true"
           fi
+
           echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
-          echo "is_nightly=${IS_NIGHTLY:-false}" >> "$GITHUB_OUTPUT"
+          echo "is_nightly=$IS_NIGHTLY" >> "$GITHUB_OUTPUT"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "build_platforms=$BUILD_PLATFORMS" >> "$GITHUB_OUTPUT"
 
