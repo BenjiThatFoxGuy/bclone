@@ -1,0 +1,40 @@
+name: test
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  quicktest:
+    name: quicktest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.24.0-rc.1'
+          check-latest: true
+
+      - name: Install Libraries
+        shell: bash
+        run: |
+          sudo modprobe fuse
+          sudo chmod 666 /dev/fuse
+          sudo chown root:$USER /etc/fuse.conf
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse-dev rpm pkg-config git-annex git-annex-remote-rclone nfs-common
+
+      - name: Run quicktest
+        shell: bash
+        run: make quicktest
+        env:
+          GOTAGS: cmount,noselfupdate
+          CGO_ENABLED: 0
