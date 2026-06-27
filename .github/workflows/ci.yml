@@ -237,7 +237,7 @@ jobs:
 
   comment-artifacts:
     name: Comment artifacts on PR
-    if: github.event_name == 'pull_request' || needs.setup.outputs.is_pr == 'true'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: [setup, build]
     permissions:
