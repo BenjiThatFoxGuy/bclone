@@ -9,7 +9,7 @@ on:
 
 jobs:
   quicktest:
-    name: Run tests
+    name: quicktest
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
