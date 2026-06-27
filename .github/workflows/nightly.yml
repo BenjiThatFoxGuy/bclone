@@ -6,6 +6,7 @@ on:
       - '**'
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
 
 env:
   IMAGE: benjithatfoxguy/bclone
@@ -21,16 +22,27 @@ jobs:
     outputs:
       matrix: ${{ steps.config.outputs.matrix }}
       is_nightly: ${{ steps.config.outputs.is_nightly }}
+      build_platforms: ${{ steps.config.outputs.build_platforms }}
+      docker_platforms: ${{ steps.config.outputs.docker_platforms }}
     steps:
       - name: Determine matrix and nightly flag
         id: config
         run: |
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo 'is_nightly=false' >> "$GITHUB_OUTPUT"
+            echo 'matrix=["linux"]' >> "$GITHUB_OUTPUT"
+            echo 'build_platforms=^(linux/amd64|linux/arm64)' >> "$GITHUB_OUTPUT"
+            echo 'docker_platforms=linux/amd64,linux/arm64' >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
             echo 'is_nightly=true' >> "$GITHUB_OUTPUT"
             echo 'matrix=["linux","windows","mac_amd64","mac_arm64"]' >> "$GITHUB_OUTPUT"
+            echo 'build_platforms=^(linux/amd64|linux/arm64|linux/arm-v7)' >> "$GITHUB_OUTPUT"
+            echo 'docker_platforms=linux/amd64,linux/arm64,linux/arm/v7' >> "$GITHUB_OUTPUT"
           else
             echo 'is_nightly=false' >> "$GITHUB_OUTPUT"
             echo 'matrix=["linux"]' >> "$GITHUB_OUTPUT"
+            echo 'build_platforms=^(linux/amd64|linux/arm64|linux/arm-v7)' >> "$GITHUB_OUTPUT"
+            echo 'docker_platforms=linux/amd64,linux/arm64,linux/arm/v7' >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -95,6 +107,12 @@ jobs:
           echo 'BUILD_FLAGS=${{ matrix.build_flags }}' >> $GITHUB_ENV
           echo 'BUILD_ARGS=${{ matrix.build_args }}' >> $GITHUB_ENV
           if [[ "${{ matrix.cgo }}" != "" ]]; then echo 'CGO_ENABLED=${{ matrix.cgo }}' >> $GITHUB_ENV ; fi
+
+      - name: Override build platforms for Linux
+        shell: bash
+        if: matrix.job_name == 'linux'
+        run: |
+          echo 'BUILD_FLAGS=-include "${{ needs.setup.outputs.build_platforms }}"' >> $GITHUB_ENV
 
       - name: Install Libraries on Linux
         shell: bash
@@ -267,7 +285,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: ${{ needs.setup.outputs.docker_platforms }}
           build-args: |
             VERSION=${{ steps.get_tag.outputs.tag }}
           labels: |
