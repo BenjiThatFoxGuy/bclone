@@ -31,17 +31,13 @@ jobs:
             echo 'is_nightly=false' >> "$GITHUB_OUTPUT"
             echo 'matrix=["linux"]' >> "$GITHUB_OUTPUT"
             echo 'build_platforms=^(linux/amd64|linux/arm64)' >> "$GITHUB_OUTPUT"
-          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            echo 'is_nightly=false' >> "$GITHUB_OUTPUT"
-            echo 'matrix=["linux","windows","mac_amd64","mac_arm64"]' >> "$GITHUB_OUTPUT"
-            echo 'build_platforms=^(linux/amd64|linux/arm64|linux/arm-v7)' >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
             echo 'is_nightly=true' >> "$GITHUB_OUTPUT"
             echo 'matrix=["linux","windows","mac_amd64","mac_arm64"]' >> "$GITHUB_OUTPUT"
             echo 'build_platforms=^(linux/amd64|linux/arm64|linux/arm-v7)' >> "$GITHUB_OUTPUT"
           else
             echo 'is_nightly=false' >> "$GITHUB_OUTPUT"
-            echo 'matrix=["linux"]' >> "$GITHUB_OUTPUT"
+            echo 'matrix=["linux","windows","mac_amd64","mac_arm64"]' >> "$GITHUB_OUTPUT"
             echo 'build_platforms=^(linux/amd64|linux/arm64|linux/arm-v7)' >> "$GITHUB_OUTPUT"
           fi
 
