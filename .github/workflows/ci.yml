@@ -77,7 +77,7 @@ jobs:
           echo "Run mode: $MODE"
 
   build:
-    name: Build ${{ matrix.job_name }}
+    name: ${{ matrix.job_name }}
     if: needs.setup.outputs.mode != 'skip'
     timeout-minutes: 60
     needs: [setup]
