@@ -1,4 +1,4 @@
-name: release
+name: ci
 
 on:
   push:
@@ -6,28 +6,36 @@ on:
       - '**'
     tags:
       - '*'
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 env:
   IMAGE: benjithatfoxguy/bclone
 
 concurrency:
-  group: snapshot-${{ github.ref_name }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # Decides what kind of run this is and what to build.
+  #
+  #   pr       PR event                -> linux only, docker pr-N, comment binaries
+  #   nightly  push to main            -> full matrix, nightly release + docker nightly
+  #   release  push to a tag           -> full matrix, github release + docker latest
+  #   snapshot push to a branch w/o PR -> full matrix, docker branch-name
+  #   skip     push to a branch w/ PR  -> nothing (the PR run already covers it)
   setup:
-    name: Determine build matrix
+    name: Determine run mode
     runs-on: ubuntu-latest
     outputs:
+      mode: ${{ steps.config.outputs.mode }}
       matrix: ${{ steps.config.outputs.matrix }}
-      is_nightly: ${{ steps.config.outputs.is_nightly }}
-      is_pr: ${{ steps.config.outputs.is_pr }}
     steps:
-      - name: Check for open PR
+      - name: Check for open PR on this branch
         id: check_pr
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main'
         uses: actions/github-script@v7
-        if: github.event_name == 'push'
         with:
           script: |
             const branch = context.ref.replace('refs/heads/', '');
@@ -35,50 +43,51 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              head: `${context.repo.owner}:${branch}`
+              head: `${context.repo.owner}:${branch}`,
             });
             return prs.data.length > 0;
 
-      - name: Determine matrix and build platforms
+      - name: Determine mode and matrix
         id: config
         env:
-          CHECK_PR_RESULT: ${{ steps.check_pr.outputs.result }}
+          HAS_OPEN_PR: ${{ steps.check_pr.outputs.result }}
         run: |
-          IS_PR="false"
-          IS_NIGHTLY="false"
+          LINUX_ONLY='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64)\""}]'
+          FULL='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64|linux/arm-v7)\""},{"job_name":"windows","os":"windows-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(windows/amd64|windows/arm64)\"","build_args":"-buildmode exe"},{"job_name":"mac_amd64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/amd64\" -cgo"},{"job_name":"mac_arm64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/arm64\" -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib"}]'
 
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            IS_PR="true"
-            MATRIX='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64)\""}]'
-          elif [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$CHECK_PR_RESULT" = "true" ]; then
-            IS_PR="true"
-            MATRIX='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64)\""}]'
+            MODE="pr"
+            MATRIX="$LINUX_ONLY"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            MODE="release"
+            MATRIX="$FULL"
           elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            IS_NIGHTLY="true"
-            MATRIX='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64|linux/arm-v7)\""},{"job_name":"windows","os":"windows-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(windows/amd64|windows/arm64)\"","build_args":"-buildmode exe"},{"job_name":"mac_amd64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/amd64\" -cgo"},{"job_name":"mac_arm64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/arm64\" -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib"}]'
+            MODE="nightly"
+            MATRIX="$FULL"
+          elif [ "$HAS_OPEN_PR" = "true" ]; then
+            MODE="skip"
+            MATRIX="$LINUX_ONLY"
           else
-            MATRIX='[{"job_name":"linux","os":"ubuntu-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(linux/amd64|linux/arm64|linux/arm-v7)\""},{"job_name":"windows","os":"windows-latest","go":">=1.24.0-rc.1","gotags":"cmount,noselfupdate","cgo":"0","build_flags":"-include \"^(windows/amd64|windows/arm64)\"","build_args":"-buildmode exe"},{"job_name":"mac_amd64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/amd64\" -cgo"},{"job_name":"mac_arm64","os":"macos-latest","go":">=1.23.0-rc.1","gotags":"cmount,noselfupdate","build_flags":"-include \"^darwin/arm64\" -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib"}]'
+            MODE="snapshot"
+            MATRIX="$FULL"
           fi
 
-          echo "is_pr=$IS_PR" >> "$GITHUB_OUTPUT"
-          echo "is_nightly=$IS_NIGHTLY" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Run mode: $MODE"
 
   build:
+    name: Build ${{ matrix.job_name }}
+    if: needs.setup.outputs.mode != 'skip'
     timeout-minutes: 60
     needs: [setup]
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.setup.outputs.matrix) }}
-
-    name: ${{ matrix.job_name }}
-
     runs-on: ${{ matrix.os }}
-
     permissions:
       contents: read
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -111,6 +120,7 @@ jobs:
           if [[ "${{ matrix.cgo }}" != "" ]]; then echo 'CGO_ENABLED=${{ matrix.cgo }}' >> $GITHUB_ENV ; fi
 
       - name: Install Libraries on Linux
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           sudo modprobe fuse
@@ -118,9 +128,9 @@ jobs:
           sudo chown root:$USER /etc/fuse.conf
           sudo apt-get update
           sudo apt-get install -y fuse3 libfuse-dev rpm pkg-config git-annex git-annex-remote-rclone nfs-common
-        if: matrix.os == 'ubuntu-latest'
 
       - name: Install Libraries on macOS
+        if: matrix.os == 'macos-latest'
         shell: bash
         run: |
           unset HOMEBREW_NO_INSTALL_FROM_API
@@ -129,9 +139,9 @@ jobs:
           brew update
           brew install --cask macfuse
           brew install git-annex git-annex-remote-rclone
-        if: matrix.os == 'macos-latest'
 
       - name: Install Libraries on Windows
+        if: matrix.os == 'windows-latest'
         shell: powershell
         run: |
           $ProgressPreference = 'SilentlyContinue'
@@ -144,7 +154,6 @@ jobs:
           }
           $path = (get-command mingw32-make.exe).Path
           Copy-Item -Path $path -Destination (Join-Path (Split-Path -Path $path) 'make.exe')
-        if: matrix.os == 'windows-latest'
 
       - name: Print Go version and environment
         shell: bash
@@ -155,8 +164,6 @@ jobs:
           go env
           printf "\n\nRclone environment:\n\n"
           make vars
-          printf "\n\nSystem environment:\n\n"
-          env
 
       - name: Build bclone
         shell: bash
@@ -173,7 +180,7 @@ jobs:
 
   release:
     name: Create Release
-    if: github.event_name == 'push'
+    if: needs.setup.outputs.mode == 'nightly' || needs.setup.outputs.mode == 'release'
     runs-on: ubuntu-latest
     needs: [setup, build]
     permissions:
@@ -195,7 +202,7 @@ jobs:
         run: echo "tag=$(make -s version)" >> $GITHUB_OUTPUT
 
       - name: Download All Artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           path: /tmp/build
           pattern: bclone-*
@@ -207,13 +214,13 @@ jobs:
           cp -r /tmp/build/* build/
 
       - name: Force-update nightly tag
-        if: github.event_name == 'push' && needs.setup.outputs.is_nightly == 'true'
+        if: needs.setup.outputs.mode == 'nightly'
         run: |
           git tag -f nightly ${{ github.sha }}
           git push origin -f refs/tags/nightly
 
       - name: Create Nightly Release
-        if: github.event_name == 'push' && needs.setup.outputs.is_nightly == 'true'
+        if: needs.setup.outputs.mode == 'nightly'
         uses: softprops/action-gh-release@v2
         with:
           name: Nightly (${{ steps.get_tag.outputs.tag }})
@@ -223,13 +230,12 @@ jobs:
             Nightly build from main branch.
             Version: ${{ steps.get_tag.outputs.tag }}
             Commit: ${{ github.sha }}
-            Built at: ${{ github.event.head_commit.timestamp }}
           files: build/**/*
           fail_on_unmatched_files: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Tagged Release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        if: needs.setup.outputs.mode == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: build/**/*
@@ -238,32 +244,27 @@ jobs:
 
   comment-artifacts:
     name: Comment artifacts on PR
-    if: github.event_name == 'pull_request'
+    if: needs.setup.outputs.mode == 'pr'
     runs-on: ubuntu-latest
     needs: [setup, build]
     permissions:
       pull-requests: write
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: bclone-linux
-          path: /tmp/artifacts
-
       - name: Comment PR with artifact link
         uses: actions/github-script@v7
         with:
           script: |
             const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `📦 Linux binaries available: [Download from Actions](${runUrl})`
+              body: `📦 Linux binaries (amd64, arm64) built for this PR: [Download from Actions](${runUrl})`,
             });
 
   docker:
     name: Build and push Docker image
+    if: needs.setup.outputs.mode != 'skip'
     runs-on: ubuntu-latest
     needs: [setup, build]
     permissions:
@@ -271,6 +272,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install Go
         uses: actions/setup-go@v5
@@ -282,23 +285,35 @@ jobs:
         id: get_tag
         run: echo "tag=$(make -s version)" >> $GITHUB_OUTPUT
 
-      - name: Determine Docker tag and platforms
+      - name: Determine Docker tags
         id: docker_config
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            TAG="pr-${{ github.event.pull_request.number }}"
-            PLATFORMS="linux/amd64,linux/arm64"
-          else
-            TAG="${GITHUB_REF#refs/heads/}"
-            TAG="${TAG#refs/tags/}"
-            TAG="${TAG//\//-}"
-            PLATFORMS="linux/amd64,linux/arm64"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
+          IMAGE_REF="ghcr.io/${{ env.IMAGE }}"
+          case "${{ needs.setup.outputs.mode }}" in
+            pr)
+              TAGS="${IMAGE_REF}:pr-${{ github.event.pull_request.number }}"
+              ;;
+            nightly)
+              TAGS="${IMAGE_REF}:nightly"
+              ;;
+            release)
+              REF_TAG="${GITHUB_REF#refs/tags/}"
+              TAGS="${IMAGE_REF}:${REF_TAG}"$'\n'"${IMAGE_REF}:latest"
+              ;;
+            snapshot)
+              BRANCH="${GITHUB_REF#refs/heads/}"
+              BRANCH="${BRANCH//\//-}"
+              TAGS="${IMAGE_REF}:${BRANCH}"
+              ;;
+          esac
+          {
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Download All Artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           path: /tmp/build
           pattern: bclone-*
@@ -310,11 +325,9 @@ jobs:
           cp -r /tmp/build/* build/
 
       - name: Set up Docker Buildx
-        if: github.event_name == 'push'
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
-        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -322,18 +335,16 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
-        if: github.event_name == 'push'
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          platforms: ${{ steps.docker_config.outputs.platforms }}
+          platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ steps.get_tag.outputs.tag }}
           labels: |
             org.opencontainers.image.version=${{ steps.get_tag.outputs.tag }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=${{ env.IMAGE }}
-            org.opencontainers.image.description=bclone release Docker image
-          tags: |
-            ghcr.io/${{ env.IMAGE }}:${{ steps.docker_config.outputs.tag }}
+            org.opencontainers.image.description=bclone image
+          tags: ${{ steps.docker_config.outputs.tags }}
