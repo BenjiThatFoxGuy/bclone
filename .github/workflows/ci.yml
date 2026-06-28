@@ -262,9 +262,76 @@ jobs:
               body: `📦 Linux binaries (amd64, arm64) built for this PR: [Download from Actions](${runUrl})`,
             });
 
-  docker:
-    name: Docker image (${{ needs.setup.outputs.mode }})
-    if: needs.setup.outputs.mode != 'skip'
+  # PR-only Docker build. Static name so it can be a required merge check
+  # without dragging in the nightly/release docker builds.
+  docker-pr:
+    name: Docker image (PR)
+    if: needs.setup.outputs.mode == 'pr'
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    permissions:
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.24.0-rc.1'
+          check-latest: true
+
+      - name: Get build tag
+        id: get_tag
+        run: echo "tag=$(make -s version)" >> $GITHUB_OUTPUT
+
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/build
+          pattern: bclone-linux
+          merge-multiple: true
+
+      - name: Extract binaries for Docker
+        run: |
+          for arch in amd64 arm64; do
+            zip=$(ls /tmp/build/rclone-*-linux-${arch}.zip)
+            unzip -o "$zip" -d "/tmp/extract-${arch}"
+            mkdir -p "build/bclone-${arch}"
+            cp /tmp/extract-${arch}/rclone-*-linux-${arch}/rclone "build/bclone-${arch}/rclone"
+          done
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.get_tag.outputs.tag }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.get_tag.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ env.IMAGE }}
+            org.opencontainers.image.description=bclone image
+          tags: ghcr.io/${{ env.IMAGE }}:pr-${{ github.event.pull_request.number }}
+
+  # Publish Docker for nightly / release / snapshot pushes.
+  docker-publish:
+    name: Docker image
+    if: needs.setup.outputs.mode == 'nightly' || needs.setup.outputs.mode == 'release' || needs.setup.outputs.mode == 'snapshot'
     runs-on: ubuntu-latest
     needs: [setup, build]
     permissions:
@@ -290,9 +357,6 @@ jobs:
         run: |
           IMAGE_REF="ghcr.io/${{ env.IMAGE }}"
           case "${{ needs.setup.outputs.mode }}" in
-            pr)
-              TAGS="${IMAGE_REF}:pr-${{ github.event.pull_request.number }}"
-              ;;
             nightly)
               TAGS="${IMAGE_REF}:nightly"
               ;;
