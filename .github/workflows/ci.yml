@@ -3,7 +3,7 @@ name: ci
 on:
   push:
     branches:
-      - main
+      - '**'
     tags:
       - '*'
   pull_request:
@@ -18,12 +18,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Decides what kind of run this is and what to build. Each commit produces
-  # exactly one run: PRs fire pull_request, main and tags fire push.
+  # Decides what kind of run this is and what to build. Like bdrive: tags get
+  # the full matrix, everything else builds linux only and always runs (never
+  # skipped), so required checks never block on a skipped state.
   #
-  #   pr       PR event       -> linux only, docker pr-N, comment binaries
-  #   nightly  push to main   -> full matrix, nightly release + docker nightly
-  #   release  push to a tag  -> full matrix, github release + docker latest
+  #   pr       PR event              -> linux only, docker pr-N, comment binaries
+  #   release  push to a tag         -> full matrix, github release + docker latest
+  #   nightly  push to main          -> full matrix, nightly release + docker nightly
+  #   snapshot push to other branch  -> linux only, docker branch-name
   setup:
     name: Determine run mode
     runs-on: ubuntu-latest
@@ -43,9 +45,12 @@ jobs:
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             MODE="release"
             MATRIX="$FULL"
-          else
+          elif [ "$GITHUB_REF" = "refs/heads/main" ]; then
             MODE="nightly"
             MATRIX="$FULL"
+          else
+            MODE="snapshot"
+            MATRIX="$LINUX_ONLY"
           fi
 
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
@@ -237,76 +242,11 @@ jobs:
               body: `📦 Linux binaries (amd64, arm64) built for this PR: [Download from Actions](${runUrl})`,
             });
 
-  # PR-only Docker build. Static name so it can be a required merge check
-  # without dragging in the nightly/release docker builds.
-  docker-pr:
-    name: Docker image (PR)
-    if: needs.setup.outputs.mode == 'pr'
-    runs-on: ubuntu-latest
-    needs: [setup, build]
-    permissions:
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '>=1.24.0-rc.1'
-          check-latest: true
-
-      - name: Get build tag
-        id: get_tag
-        run: echo "tag=$(make -s version)" >> $GITHUB_OUTPUT
-
-      - name: Download Linux Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/build
-          pattern: bclone-linux
-          merge-multiple: true
-
-      - name: Extract binaries for Docker
-        run: |
-          for arch in amd64 arm64; do
-            zip=$(ls /tmp/build/rclone-*-linux-${arch}.zip)
-            unzip -o "$zip" -d "/tmp/extract-${arch}"
-            mkdir -p "build/bclone-${arch}"
-            cp /tmp/extract-${arch}/rclone-*-linux-${arch}/rclone "build/bclone-${arch}/rclone"
-          done
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          build-args: |
-            VERSION=${{ steps.get_tag.outputs.tag }}
-          labels: |
-            org.opencontainers.image.version=${{ steps.get_tag.outputs.tag }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.title=${{ env.IMAGE }}
-            org.opencontainers.image.description=bclone image
-          tags: ghcr.io/${{ env.IMAGE }}:pr-${{ github.event.pull_request.number }}
-
-  # Publish Docker for nightly / release pushes.
-  docker-publish:
+  # Single Docker job, bdrive-style: always runs (never gated off, so never
+  # skipped) and just computes a different tag per mode. One static check name
+  # 'Docker image' that is green on every PR, so it works as a merge condition.
+  docker:
     name: Docker image
-    if: needs.setup.outputs.mode == 'nightly' || needs.setup.outputs.mode == 'release'
     runs-on: ubuntu-latest
     needs: [setup, build]
     permissions:
@@ -332,12 +272,20 @@ jobs:
         run: |
           IMAGE_REF="ghcr.io/${{ env.IMAGE }}"
           case "${{ needs.setup.outputs.mode }}" in
+            pr)
+              TAGS="${IMAGE_REF}:pr-${{ github.event.pull_request.number }}"
+              ;;
             nightly)
               TAGS="${IMAGE_REF}:nightly"
               ;;
             release)
               REF_TAG="${GITHUB_REF#refs/tags/}"
               TAGS="${IMAGE_REF}:${REF_TAG}"$'\n'"${IMAGE_REF}:latest"
+              ;;
+            snapshot)
+              BRANCH="${GITHUB_REF#refs/heads/}"
+              BRANCH="${BRANCH//\//-}"
+              TAGS="${IMAGE_REF}:${BRANCH}"
               ;;
           esac
           {
