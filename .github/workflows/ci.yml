@@ -312,17 +312,21 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Download All Artifacts
+      - name: Download Linux Artifacts
         uses: actions/download-artifact@v4
         with:
           path: /tmp/build
-          pattern: bclone-*
+          pattern: bclone-linux
           merge-multiple: true
 
-      - name: Copy Artifacts
+      - name: Extract binaries for Docker
         run: |
-          mkdir build
-          cp -r /tmp/build/* build/
+          for arch in amd64 arm64; do
+            zip=$(ls /tmp/build/rclone-*-linux-${arch}.zip)
+            unzip -o "$zip" -d "/tmp/extract-${arch}"
+            mkdir -p "build/bclone-${arch}"
+            cp /tmp/extract-${arch}/rclone-*-linux-${arch}/rclone "build/bclone-${arch}/rclone"
+          done
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
