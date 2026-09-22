@@ -470,6 +470,7 @@ func (f *Fs) refreshLibraryCache(ctx context.Context) error {
 			f.albumMu.Lock()
 			for _, album := range albums {
 				if album.Title != "" && album.MediaKey != "" {
+					// API is source of truth - always overwrite local cache
 					f.albums[album.Title] = album.MediaKey
 				}
 			}
@@ -864,19 +865,15 @@ func (f *Fs) addToAlbum(ctx context.Context, mode albumMode, ref string, mediaKe
 		return f.client.AddMediaToAlbum(ctx, ref, []string{mediaKey})
 	}
 
-	// Check album cache first
+	// Ensure library cache is fresh (respects TTL, so no-op if recently synced).
+	// This populates f.albums from the API's album listing, which is the
+	// source of truth. We always check the API before trusting local cache
+	// because Google silently creates new albums on stale IDs instead of erroring.
+	_ = f.refreshLibraryCache(ctx)
+
 	f.albumMu.Lock()
 	id, ok := f.albums[ref]
 	f.albumMu.Unlock()
-
-	if !ok {
-		// Not in cache - refresh from API to discover existing albums
-		fs.Debugf(f, "Album %q not in cache, refreshing library to find it", ref)
-		_ = f.refreshLibraryCache(ctx)
-		f.albumMu.Lock()
-		id, ok = f.albums[ref]
-		f.albumMu.Unlock()
-	}
 
 	if !ok {
 		// Still not found after refresh - create new album
