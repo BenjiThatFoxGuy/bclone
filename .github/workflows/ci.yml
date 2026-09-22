@@ -386,6 +386,18 @@ jobs:
           git tag -f nightly ${{ github.sha }}
           git push origin -f refs/tags/nightly
 
+      - name: Clean up old nightly assets
+        if: needs.setup.outputs.mode == 'nightly'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete all existing assets from the nightly release so only
+          # the current build's binaries are listed.
+          gh release view nightly --json assets --jq '.assets[].name' 2>/dev/null | while read -r name; do
+            echo "Deleting old asset: $name"
+            gh release delete-asset nightly "$name" --yes 2>/dev/null || true
+          done
+
       - name: Create Nightly Release
         if: needs.setup.outputs.mode == 'nightly'
         uses: softprops/action-gh-release@v2
