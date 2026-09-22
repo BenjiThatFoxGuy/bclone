@@ -455,16 +455,29 @@ func (f *Fs) refreshLibraryCache(ctx context.Context) error {
 	fs.Infof(f, "Refreshing Google Photos library cache (sync_token present: %v, cached items: %d)", f.libSyncToken != "", len(f.libCache))
 
 	newItems := map[string]*api.LibraryItem{}
-	newSyncToken, err := f.client.ListLibrary(ctx, f.libSyncToken, func(items []api.LibraryItem) error {
-		for i := range items {
-			item := items[i]
-			if item.FileName != "" {
-				newItems[item.FileName] = &item
+	newSyncToken, err := f.client.ListLibrary(ctx, f.libSyncToken,
+		func(items []api.LibraryItem) error {
+			for i := range items {
+				item := items[i]
+				if item.FileName != "" {
+					newItems[item.FileName] = &item
+				}
 			}
-		}
-		fs.Debugf(f, "Library page: received %d items (%d total new)", len(items), len(newItems))
-		return nil
-	})
+			fs.Debugf(f, "Library page: received %d items (%d total new)", len(items), len(newItems))
+			return nil
+		},
+		func(albums []api.AlbumInfo) error {
+			f.albumMu.Lock()
+			for _, album := range albums {
+				if album.Title != "" && album.MediaKey != "" {
+					f.albums[album.Title] = album.MediaKey
+				}
+			}
+			f.albumMu.Unlock()
+			fs.Debugf(f, "Library page: received %d albums", len(albums))
+			return nil
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("gotohp: library refresh failed: %w", err)
 	}
@@ -543,47 +556,45 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		}
 
 	case fullDir == "Album" || (f.root != "" && fullDir == f.root+"/Album"):
-		// Album listing: show unique album names as directories
-		// Build album name -> collection ID mapping from items
-		albumNames := map[string]bool{}
-		for _, item := range f.libCache {
-			if item.CollectionID != "" {
-				// We don't have album names from the listing, just IDs.
-				// Use collection ID as the directory name for now.
-				if !albumNames[item.CollectionID] {
-					albumNames[item.CollectionID] = true
-					displayDir := "Album/" + item.CollectionID
-					if f.root != "" {
-						displayDir = strings.TrimPrefix(displayDir, f.root+"/")
-					}
-					entries = append(entries, fs.NewDir(item.CollectionID, time.Now()))
-				}
+		// Album listing: show album names as directories
+		f.albumMu.Lock()
+		for name := range f.albums {
+			if name != "" {
+				entries = append(entries, fs.NewDir(name, time.Now()))
 			}
 		}
+		f.albumMu.Unlock()
 
 	case strings.HasPrefix(fullDir, "Album/") || (f.root != "" && strings.HasPrefix(fullDir, f.root+"/Album/")):
-		// Album contents: show files in a specific album
-		var albumID string
+		// Album contents: show files in a specific album by name
+		var albumName string
 		if f.root != "" {
-			albumID = strings.TrimPrefix(fullDir, f.root+"/Album/")
+			albumName = strings.TrimPrefix(fullDir, f.root+"/Album/")
 		} else {
-			albumID = strings.TrimPrefix(fullDir, "Album/")
+			albumName = strings.TrimPrefix(fullDir, "Album/")
 		}
-		for _, item := range f.libCache {
-			if item.CollectionID == albumID && item.FileName != "" {
-				remote := item.FileName
-				if !seenNames[remote] {
-					seenNames[remote] = true
-					// Build remote relative to the dir being listed
-					listRemote := dir + "/" + remote
-					if dir == "" {
-						listRemote = remote
+		// Resolve album name to media key
+		f.albumMu.Lock()
+		albumKey := f.albums[albumName]
+		f.albumMu.Unlock()
+
+		if albumKey != "" {
+			// Find items with matching collection_id
+			for _, item := range f.libCache {
+				if item.CollectionID == albumKey && item.FileName != "" {
+					remote := item.FileName
+					if !seenNames[remote] {
+						seenNames[remote] = true
+						listRemote := dir + "/" + remote
+						if dir == "" {
+							listRemote = remote
+						}
+						entries = append(entries, &Object{
+							f: f, remote: listRemote, size: item.SizeBytes,
+							modTime: time.Unix(item.Timestamp, 0),
+							mediaKey: item.MediaKey, dedupKey: item.DedupKey,
+						})
 					}
-					entries = append(entries, &Object{
-						f: f, remote: listRemote, size: item.SizeBytes,
-						modTime: time.Unix(item.Timestamp, 0),
-						mediaKey: item.MediaKey, dedupKey: item.DedupKey,
-					})
 				}
 			}
 		}

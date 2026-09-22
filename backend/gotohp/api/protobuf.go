@@ -483,17 +483,23 @@ func (f pbFields) msgsAt(num protowire.Number) []pbFields {
 	return result
 }
 
+// AlbumInfo holds basic info about a Google Photos album/collection.
+type AlbumInfo struct {
+	MediaKey string `json:"media_key"` // album's media key (used for add-to-album)
+	Title    string `json:"title"`     // album display name
+}
+
 // DecodeLibraryResponse parses the response from the library listing endpoint.
-// Returns the sync/resume tokens for pagination and the list of media items.
-func DecodeLibraryResponse(data []byte) (syncToken, resumeToken string, items []LibraryItem, err error) {
+// Returns the sync/resume tokens for pagination, media items, and album info.
+func DecodeLibraryResponse(data []byte) (syncToken, resumeToken string, items []LibraryItem, albums []AlbumInfo, err error) {
 	root, err := parsePBFields(data)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("gotohp: failed to parse library response: %w", err)
+		return "", "", nil, nil, fmt.Errorf("gotohp: failed to parse library response: %w", err)
 	}
 
 	container := root.msg(1)
 	if container == nil {
-		return "", "", nil, fmt.Errorf("gotohp: library response missing container (field 1)")
+		return "", "", nil, nil, fmt.Errorf("gotohp: library response missing container (field 1)")
 	}
 
 	resumeToken = container.strAt(1)
@@ -552,5 +558,21 @@ func DecodeLibraryResponse(data []byte) (syncToken, resumeToken string, items []
 		}
 	}
 
-	return syncToken, resumeToken, items, nil
+	// Parse album/collection entries (field 3, repeated)
+	for _, collFields := range container.msgsAt(3) {
+		albumKey := collFields.strAt(1) // collection media key
+		collMeta := collFields.msg(2)
+		var title string
+		if collMeta != nil {
+			title = collMeta.strAt(5) // album title/name
+		}
+		if albumKey != "" {
+			albums = append(albums, AlbumInfo{
+				MediaKey: albumKey,
+				Title:    title,
+			})
+		}
+	}
+
+	return syncToken, resumeToken, items, albums, nil
 }

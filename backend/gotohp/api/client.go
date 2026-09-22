@@ -451,9 +451,9 @@ func (c *Client) CreateAlbum(ctx context.Context, albumName string, mediaKeys []
 }
 
 // ListLibrary enumerates all media items in the user's Google Photos library.
-// It handles pagination internally, calling the callback for each batch of items.
-// The returned syncToken can be saved and passed to future calls for delta sync.
-func (c *Client) ListLibrary(ctx context.Context, syncToken string, fn func(items []LibraryItem) error) (newSyncToken string, err error) {
+// It handles pagination internally, calling the callbacks for each batch of
+// items and albums. The returned syncToken can be saved for delta sync.
+func (c *Client) ListLibrary(ctx context.Context, syncToken string, itemFn func(items []LibraryItem) error, albumFn func(albums []AlbumInfo) error) (newSyncToken string, err error) {
 	// Step 1: Get library state (initial sync or delta)
 	body := EncodeGetLibraryState(syncToken)
 	respBody, err := c.postProtobuf(ctx, c.libraryEndpoint, body, true)
@@ -461,12 +461,17 @@ func (c *Client) ListLibrary(ctx context.Context, syncToken string, fn func(item
 		return "", fmt.Errorf("gotohp: list library state failed: %w", err)
 	}
 
-	newSyncToken, resumeToken, items, err := DecodeLibraryResponse(respBody)
+	newSyncToken, resumeToken, items, albums, err := DecodeLibraryResponse(respBody)
 	if err != nil {
 		return "", err
 	}
 	if len(items) > 0 {
-		if err := fn(items); err != nil {
+		if err := itemFn(items); err != nil {
+			return newSyncToken, err
+		}
+	}
+	if len(albums) > 0 && albumFn != nil {
+		if err := albumFn(albums); err != nil {
 			return newSyncToken, err
 		}
 	}
@@ -483,12 +488,18 @@ func (c *Client) ListLibrary(ctx context.Context, syncToken string, fn func(item
 		}
 
 		var pageItems []LibraryItem
-		_, resumeToken, pageItems, err = DecodeLibraryResponse(respBody)
+		var pageAlbums []AlbumInfo
+		_, resumeToken, pageItems, pageAlbums, err = DecodeLibraryResponse(respBody)
 		if err != nil {
 			return newSyncToken, err
 		}
 		if len(pageItems) > 0 {
-			if err := fn(pageItems); err != nil {
+			if err := itemFn(pageItems); err != nil {
+				return newSyncToken, err
+			}
+		}
+		if len(pageAlbums) > 0 && albumFn != nil {
+			if err := albumFn(pageAlbums); err != nil {
 				return newSyncToken, err
 			}
 		}
