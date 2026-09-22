@@ -257,6 +257,7 @@ func (c *Client) getAuthToken(ctx context.Context) (token string, expiry int64, 
 // postProtobuf issues a POST with an application/x-protobuf body and
 // returns the (possibly gzip-decoded) response body.
 func (c *Client) postProtobuf(ctx context.Context, endpoint string, body []byte, extHeaders bool) ([]byte, error) {
+	debugLog("gotohp: POST %s (%d bytes)", endpoint, len(body))
 	bearer, err := c.bearerToken(ctx)
 	if err != nil {
 		return nil, err
@@ -283,6 +284,7 @@ func (c *Client) postProtobuf(ctx context.Context, endpoint string, body []byte,
 	if err != nil {
 		return nil, err
 	}
+	debugLog("gotohp: POST %s -> %d (%d bytes response)", endpoint, resp.StatusCode, len(respBody))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("gotohp: request to %s failed with status %d: %s", endpoint, resp.StatusCode, respBody)
 	}
@@ -499,4 +501,13 @@ func (c *Client) AddMediaToAlbum(ctx context.Context, albumMediaKey string, medi
 	body := EncodeAddMediaToAlbum(mediaKeys, albumMediaKey, time.Now().Unix(), model, deviceMk, androidAPIVersion)
 	_, err := c.postProtobuf(ctx, c.addToAlbumEndpoint, body, true)
 	return err
+}
+
+// SetDebugLog enables verbose request logging for the API client.
+var DebugLog func(format string, args ...interface{})
+
+func debugLog(format string, args ...interface{}) {
+	if DebugLog != nil {
+		DebugLog(format, args...)
+	}
 }

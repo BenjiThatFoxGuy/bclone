@@ -104,14 +104,12 @@ libraries when you only want to upload, not sync.`,
 		}, {
 			Name:     "cache_dir",
 			Advanced: true,
+			Default:  "~/.cache/rclone/gotohp",
 			Help: `Directory to persist the library cache and sync token between runs.
 
-When set, the library listing is saved to disk after each sync so
-subsequent rclone invocations can do incremental updates instead of
-a full re-scan. If unset, the cache lives only in memory and a
-full sync happens on every run.
-
-Example: ~/.cache/rclone/gotohp`,
+The library listing is saved to disk after each sync so subsequent
+rclone invocations can do incremental updates instead of a full
+re-scan. Set to empty to disable disk caching (in-memory only).`,
 		}},
 	})
 }
@@ -232,6 +230,14 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		lingerFor = defaultLingerDuration
 	}
 
+	// Expand ~ in cache_dir
+	cacheDir := opt.CacheDir
+	if strings.HasPrefix(cacheDir, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			cacheDir = filepath.Join(home, cacheDir[2:])
+		}
+	}
+
 	f := &Fs{
 		name:         name,
 		root:         strings.Trim(root, "/"),
@@ -246,6 +252,12 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		libCache:     map[string]*api.LibraryItem{},
 		libCacheTTL:  5 * time.Minute,
 	}
+	f.opt.CacheDir = cacheDir // store expanded path
+	// Wire up API debug logging to rclone's -vv output
+	api.DebugLog = func(format string, args ...interface{}) {
+		fs.Debugf(f, format, args...)
+	}
+
 	f.features = (&fs.Features{
 		CanHaveEmptyDirectories: false,
 		NoMultiThreading:        true,
