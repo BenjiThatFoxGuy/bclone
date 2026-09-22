@@ -9,11 +9,13 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -90,6 +92,26 @@ When unset (the default), paths are used to route uploads instead:
 Since this remote can't list or read back the library, rclone's usual
 skip-if-exists logic can't run — this performs the equivalent check
 per-file against Google's hash index before uploading.`,
+		}, {
+			Name:     "skip_listing",
+			Advanced: true,
+			Default:  false,
+			Help: `Skip library listing entirely (upload-only mode).
+
+When true, List and NewObject always return empty/not-found, and no
+API calls are made to enumerate the library. Use this for large
+libraries when you only want to upload, not sync.`,
+		}, {
+			Name:     "cache_dir",
+			Advanced: true,
+			Help: `Directory to persist the library cache and sync token between runs.
+
+When set, the library listing is saved to disk after each sync so
+subsequent rclone invocations can do incremental updates instead of
+a full re-scan. If unset, the cache lives only in memory and a
+full sync happens on every run.
+
+Example: ~/.cache/rclone/gotohp`,
 		}},
 	})
 }
@@ -101,6 +123,8 @@ type Options struct {
 	Quality      string `config:"quality"`
 	UseQuota     bool   `config:"use_quota"`
 	SkipExisting bool   `config:"skip_existing"`
+	SkipListing  bool   `config:"skip_listing"`
+	CacheDir     string `config:"cache_dir"`
 }
 
 // albumMode identifies how a resolved path should be associated with an album.
@@ -317,9 +341,68 @@ func (f *Fs) sweepPhantom() {
 	f.phantomMu.Unlock()
 }
 
+// libraryCacheFile holds the persisted library state.
+type libraryCacheFile struct {
+	SyncToken string                       `json:"sync_token"`
+	Items     map[string]*api.LibraryItem  `json:"items"`
+	SavedAt   time.Time                    `json:"saved_at"`
+}
+
+// loadLibraryCache reads the persisted cache from disk if available.
+func (f *Fs) loadLibraryCache() {
+	if f.opt.CacheDir == "" {
+		return
+	}
+	cachePath := filepath.Join(f.opt.CacheDir, "library_cache.json")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return // no cache file yet
+	}
+	var cached libraryCacheFile
+	if err := json.Unmarshal(data, &cached); err != nil {
+		fs.Debugf(f, "Library cache file corrupt, ignoring: %v", err)
+		return
+	}
+	f.libCache = cached.Items
+	f.libSyncToken = cached.SyncToken
+	f.libCacheTime = cached.SavedAt
+	fs.Infof(f, "Loaded library cache from disk: %d items, sync_token=%q", len(f.libCache), f.libSyncToken[:min(20, len(f.libSyncToken))]+"...")
+}
+
+// saveLibraryCache writes the current cache to disk.
+func (f *Fs) saveLibraryCache() {
+	if f.opt.CacheDir == "" {
+		return
+	}
+	if err := os.MkdirAll(f.opt.CacheDir, 0o755); err != nil {
+		fs.Debugf(f, "Failed to create cache dir: %v", err)
+		return
+	}
+	cached := libraryCacheFile{
+		SyncToken: f.libSyncToken,
+		Items:     f.libCache,
+		SavedAt:   time.Now(),
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		fs.Debugf(f, "Failed to marshal library cache: %v", err)
+		return
+	}
+	cachePath := filepath.Join(f.opt.CacheDir, "library_cache.json")
+	if err := os.WriteFile(cachePath, data, 0o644); err != nil {
+		fs.Debugf(f, "Failed to write library cache: %v", err)
+		return
+	}
+	fs.Debugf(f, "Saved library cache to disk: %d items", len(f.libCache))
+}
+
 // refreshLibraryCache fetches the full library listing from Google Photos
 // and populates the cache. Uses sync_token for incremental updates.
 func (f *Fs) refreshLibraryCache(ctx context.Context) error {
+	if f.opt.SkipListing {
+		return nil
+	}
+
 	f.libMu.Lock()
 	defer f.libMu.Unlock()
 
@@ -328,7 +411,16 @@ func (f *Fs) refreshLibraryCache(ctx context.Context) error {
 		return nil
 	}
 
-	fs.Debugf(f, "Refreshing Google Photos library cache (sync_token=%q)", f.libSyncToken)
+	// Try loading from disk on first access
+	if len(f.libCache) == 0 && f.libSyncToken == "" {
+		f.loadLibraryCache()
+		// If we loaded a cache with a sync_token, check freshness
+		if !f.libCacheTime.IsZero() && time.Since(f.libCacheTime) < f.libCacheTTL {
+			return nil
+		}
+	}
+
+	fs.Infof(f, "Refreshing Google Photos library cache (sync_token present: %v, cached items: %d)", f.libSyncToken != "", len(f.libCache))
 
 	newItems := map[string]*api.LibraryItem{}
 	newSyncToken, err := f.client.ListLibrary(ctx, f.libSyncToken, func(items []api.LibraryItem) error {
@@ -338,6 +430,7 @@ func (f *Fs) refreshLibraryCache(ctx context.Context) error {
 				newItems[item.FileName] = &item
 			}
 		}
+		fs.Debugf(f, "Library page: received %d items (%d total new)", len(items), len(newItems))
 		return nil
 	})
 	if err != nil {
@@ -356,7 +449,11 @@ func (f *Fs) refreshLibraryCache(ctx context.Context) error {
 
 	f.libSyncToken = newSyncToken
 	f.libCacheTime = time.Now()
-	fs.Debugf(f, "Library cache refreshed: %d items total", len(f.libCache))
+	fs.Infof(f, "Library cache refreshed: %d items total", len(f.libCache))
+
+	// Persist to disk
+	f.saveLibraryCache()
+
 	return nil
 }
 
