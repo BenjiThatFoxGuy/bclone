@@ -357,6 +357,7 @@ func (f *Fs) sweepPhantom() {
 type libraryCacheFile struct {
 	SyncToken string                       `json:"sync_token"`
 	Items     map[string]*api.LibraryItem  `json:"items"`
+	Albums    map[string]string            `json:"albums,omitempty"` // name -> album media key
 	SavedAt   time.Time                    `json:"saved_at"`
 }
 
@@ -380,6 +381,13 @@ func (f *Fs) loadLibraryCache() {
 	} else {
 		f.libCache = make(map[string]*api.LibraryItem)
 	}
+	if cached.Albums != nil {
+		f.albumMu.Lock()
+		for k, v := range cached.Albums {
+			f.albums[k] = v
+		}
+		f.albumMu.Unlock()
+	}
 	f.libSyncToken = cached.SyncToken
 	f.libCacheTime = cached.SavedAt
 	fs.Infof(f, "Loaded library cache from disk: %d items, sync_token=%q", len(f.libCache), f.libSyncToken[:min(20, len(f.libSyncToken))]+"...")
@@ -394,9 +402,17 @@ func (f *Fs) saveLibraryCache() {
 		fs.Debugf(f, "Failed to create cache dir: %v", err)
 		return
 	}
+	f.albumMu.Lock()
+	albumsCopy := make(map[string]string, len(f.albums))
+	for k, v := range f.albums {
+		albumsCopy[k] = v
+	}
+	f.albumMu.Unlock()
+
 	cached := libraryCacheFile{
 		SyncToken: f.libSyncToken,
 		Items:     f.libCache,
+		Albums:    albumsCopy,
 		SavedAt:   time.Now(),
 	}
 	data, err := json.Marshal(cached)
