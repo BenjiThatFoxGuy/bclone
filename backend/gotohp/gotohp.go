@@ -857,28 +857,44 @@ func (f *Fs) uploadToGoogle(ctx context.Context, pu *pendingUpload) (string, err
 
 // addToAlbum resolves ref to an album media key and adds mediaKey to it.
 // Google's API has no create-empty-album call, so for a brand new
-// "Album" name the very first item is created together with the album
-// (matching gotohp's own createNewAlbum); subsequent items for the same
-// name are added to the now-cached album.
+// "Album" name: looks up the album by name in the cache, refreshing from
+// the API if needed. Only creates a new album if it truly doesn't exist.
 func (f *Fs) addToAlbum(ctx context.Context, mode albumMode, ref string, mediaKey string) error {
 	if mode == albumExisting {
 		return f.client.AddMediaToAlbum(ctx, ref, []string{mediaKey})
 	}
-	// albumByName uses create-or-get (Google's API is idempotent)
+
+	// Check album cache first
 	f.albumMu.Lock()
 	id, ok := f.albums[ref]
+	f.albumMu.Unlock()
+
 	if !ok {
+		// Not in cache - refresh from API to discover existing albums
+		fs.Debugf(f, "Album %q not in cache, refreshing library to find it", ref)
+		_ = f.refreshLibraryCache(ctx)
+		f.albumMu.Lock()
+		id, ok = f.albums[ref]
+		f.albumMu.Unlock()
+	}
+
+	if !ok {
+		// Still not found after refresh - create new album
+		fs.Infof(f, "Creating new album %q", ref)
 		var err error
 		id, err = f.client.CreateAlbum(ctx, ref, []string{mediaKey})
 		if err != nil {
-			f.albumMu.Unlock()
 			return err
 		}
+		f.albumMu.Lock()
 		f.albums[ref] = id
 		f.albumMu.Unlock()
+		f.saveLibraryCache()
 		return nil
 	}
-	f.albumMu.Unlock()
+
+	// Found existing album - add to it
+	fs.Debugf(f, "Adding to existing album %q (%s)", ref, id)
 	return f.client.AddMediaToAlbum(ctx, id, []string{mediaKey})
 }
 
