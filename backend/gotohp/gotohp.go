@@ -1,8 +1,8 @@
-// Package gotohp implements a write-only backend for the unofficial Google
-// Photos native (Android app) upload protocol, reimplemented from
+// Package gotohp implements a backend for the unofficial Google Photos
+// native (Android app) protocol, reimplemented from
 // https://github.com/xob0t/gotohp (MIT licensed) — see backend/gotohp/api
 // for protocol details and why gotohp's own Go code isn't imported
-// directly.
+// directly. Includes experimental read support (library listing) for sync.
 package gotohp
 
 import (
@@ -164,6 +164,13 @@ type Fs struct {
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingUpload // key: remote path relative to f.root
+
+	// Library cache for read support (experimental)
+	libMu        sync.Mutex
+	libCache     map[string]*api.LibraryItem // key: filename
+	libSyncToken string
+	libCacheTime time.Time
+	libCacheTTL  time.Duration // how long to consider the cache fresh
 }
 
 // NewFs constructs a new Fs from the path, container:path
@@ -212,6 +219,8 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		phantomDir:   spoolDir,
 		phantom:      map[string]*phantomEntry{},
 		pending:      map[string]*pendingUpload{},
+		libCache:     map[string]*api.LibraryItem{},
+		libCacheTTL:  5 * time.Minute,
 	}
 	f.features = (&fs.Features{
 		CanHaveEmptyDirectories: false,
@@ -308,25 +317,74 @@ func (f *Fs) sweepPhantom() {
 	f.phantomMu.Unlock()
 }
 
-// List returns recently-uploaded (still-lingering) entries under dir; this
-// remote has no real remote listing capability. Only meaningful when
-// deferred uploads are enabled (auto-detected, see NewFs) — otherwise nothing is
-// ever kept around to list.
-func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
-	if !f.deferUploads {
-		return fs.DirEntries{}, nil
+// refreshLibraryCache fetches the full library listing from Google Photos
+// and populates the cache. Uses sync_token for incremental updates.
+func (f *Fs) refreshLibraryCache(ctx context.Context) error {
+	f.libMu.Lock()
+	defer f.libMu.Unlock()
+
+	// Check if cache is still fresh
+	if !f.libCacheTime.IsZero() && time.Since(f.libCacheTime) < f.libCacheTTL {
+		return nil
 	}
-	f.sweepPhantom()
-	f.phantomMu.Lock()
-	defer f.phantomMu.Unlock()
+
+	fs.Debugf(f, "Refreshing Google Photos library cache (sync_token=%q)", f.libSyncToken)
+
+	newItems := map[string]*api.LibraryItem{}
+	newSyncToken, err := f.client.ListLibrary(ctx, f.libSyncToken, func(items []api.LibraryItem) error {
+		for i := range items {
+			item := items[i]
+			if item.FileName != "" {
+				newItems[item.FileName] = &item
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("gotohp: library refresh failed: %w", err)
+	}
+
+	if f.libSyncToken == "" {
+		// Full sync: replace entire cache
+		f.libCache = newItems
+	} else {
+		// Delta sync: merge new items into existing cache
+		for k, v := range newItems {
+			f.libCache[k] = v
+		}
+	}
+
+	f.libSyncToken = newSyncToken
+	f.libCacheTime = time.Now()
+	fs.Debugf(f, "Library cache refreshed: %d items total", len(f.libCache))
+	return nil
+}
+
+// List returns entries under dir from the Google Photos library cache,
+// merged with any recently-uploaded phantom entries.
+func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
+	// Refresh library cache if needed
+	if err := f.refreshLibraryCache(ctx); err != nil {
+		fs.Debugf(f, "Library listing failed, falling back to phantom-only: %v", err)
+	}
 
 	prefix := dir
 	if prefix != "" {
 		prefix += "/"
 	}
 	var entries fs.DirEntries
-	seenDirs := map[string]bool{}
-	for remote, entry := range f.phantom {
+	seenNames := map[string]bool{}
+
+	// Library items (real remote data)
+	f.libMu.Lock()
+	for fileName, item := range f.libCache {
+		remote := fileName
+		if f.root != "" {
+			if !strings.HasPrefix(remote, f.root+"/") {
+				continue
+			}
+			remote = strings.TrimPrefix(remote, f.root+"/")
+		}
 		if dir != "" && !strings.HasPrefix(remote, prefix) {
 			continue
 		}
@@ -334,32 +392,90 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		if rest == "" {
 			continue
 		}
-		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
-			dirPath := prefix + rest[:slash]
-			if !seenDirs[dirPath] {
-				seenDirs[dirPath] = true
-				entries = append(entries, fs.NewDir(dirPath, entry.modTime))
-			}
+		if strings.ContainsRune(rest, '/') {
+			// Subdirectory - we don't synthesize dirs from library items
 			continue
 		}
-		entries = append(entries, f.newObject(remote, entry))
+		if !seenNames[remote] {
+			seenNames[remote] = true
+			entries = append(entries, &Object{
+				f:       f,
+				remote:  remote,
+				size:    item.SizeBytes,
+				modTime: time.Unix(item.Timestamp, 0),
+			})
+		}
 	}
+	f.libMu.Unlock()
+
+	// Phantom entries (recently uploaded, not yet in library cache)
+	if f.deferUploads {
+		f.sweepPhantom()
+		f.phantomMu.Lock()
+		for remote, entry := range f.phantom {
+			if dir != "" && !strings.HasPrefix(remote, prefix) {
+				continue
+			}
+			rest := strings.TrimPrefix(remote, prefix)
+			if rest == "" {
+				continue
+			}
+			if strings.ContainsRune(rest, '/') {
+				continue
+			}
+			if !seenNames[remote] {
+				seenNames[remote] = true
+				entries = append(entries, f.newObject(remote, entry))
+			}
+		}
+		f.phantomMu.Unlock()
+	}
+
 	return entries, nil
 }
 
-// NewObject finds an object recently uploaded under this remote, if it's
-// still within its lingering window. Only meaningful when deferred uploads
-// are enabled (auto-detected, see NewFs).
+// NewObject finds an object by name in the library cache or phantom entries.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	if !f.deferUploads {
+	// Check phantom cache first (recently uploaded)
+	if f.deferUploads {
+		f.sweepPhantom()
+		entry, ok := f.getPhantom(remote)
+		if ok {
+			return f.newObject(remote, entry), nil
+		}
+	}
+
+	// Check library cache
+	if err := f.refreshLibraryCache(ctx); err != nil {
 		return nil, fs.ErrorObjectNotFound
 	}
-	f.sweepPhantom()
-	entry, ok := f.getPhantom(remote)
+
+	fileName := remote
+	if f.root != "" {
+		fileName = f.root + "/" + remote
+	}
+
+	f.libMu.Lock()
+	item, ok := f.libCache[fileName]
+	f.libMu.Unlock()
+
+	if !ok {
+		// Also try without root prefix (library items might be stored by filename only)
+		f.libMu.Lock()
+		item, ok = f.libCache[path.Base(remote)]
+		f.libMu.Unlock()
+	}
+
 	if !ok {
 		return nil, fs.ErrorObjectNotFound
 	}
-	return f.newObject(remote, entry), nil
+
+	return &Object{
+		f:       f,
+		remote:  remote,
+		size:    item.SizeBytes,
+		modTime: time.Unix(item.Timestamp, 0),
+	}, nil
 }
 
 func (f *Fs) newObject(remote string, entry *phantomEntry) *Object {

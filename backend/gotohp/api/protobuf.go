@@ -308,3 +308,177 @@ func EncodeAddMediaToAlbum(mediaKeys []string, albumMediaKey string, timestamp i
 	b = b.varint(7, uint64(timestamp))
 	return b
 }
+
+// --- Library Listing (get_library_state / get_library_page) ---
+// Endpoint: photosdata-pa.googleapis.com/6439526531001121323/18047484249733410717
+//
+// The request contains a massive "field mask" telling the server what data to
+// include. This builds a minimal mask sufficient for file listing (name, size,
+// hash, timestamps). The server is tolerant of minimal masks.
+
+// emptyMsg is a convenience for building empty nested messages (field mask entries).
+func emptyMsg() pbBuilder { return pbBuilder{} }
+
+// buildFieldMask constructs the media item field mask (field 1.1 of the request).
+// This tells the server which media item fields to include in the response.
+func buildFieldMask() pbBuilder {
+	// Field 1.1.1 = basic item fields mask
+	var itemFields pbBuilder
+	itemFields = itemFields.message(1, emptyMsg())  // media_key
+	itemFields = itemFields.message(3, emptyMsg())  // caption
+	itemFields = itemFields.message(4, emptyMsg())  // file_name
+	itemFields = itemFields.message(5, emptyMsg().  // properties
+					message(1, emptyMsg()).
+					message(2, emptyMsg()).
+					message(3, emptyMsg()).
+					message(4, emptyMsg()).
+					message(5, emptyMsg()).
+					message(7, emptyMsg()))
+	itemFields = itemFields.message(6, emptyMsg())  // unknown
+	itemFields = itemFields.message(7, emptyMsg().  // dimensions/EXIF
+					message(1, emptyMsg()).
+					message(2, emptyMsg()))
+	itemFields = itemFields.message(8, emptyMsg())  // unknown
+	itemFields = itemFields.message(9, emptyMsg())  // server_creation_timestamp
+	itemFields = itemFields.message(10, emptyMsg(). // size info
+					message(1, emptyMsg()))
+	itemFields = itemFields.message(11, emptyMsg()) // upload_status
+
+	// Field 1.1 = content type mask
+	var contentMask pbBuilder
+	contentMask = contentMask.message(1, itemFields) // item fields
+	contentMask = contentMask.message(2, emptyMsg()) // photo data
+	contentMask = contentMask.message(3, emptyMsg()) // video data
+	contentMask = contentMask.message(4, emptyMsg()) // unknown
+
+	// Outer field 1
+	var f1 pbBuilder
+	f1 = f1.message(1, contentMask)               // media item mask
+	f1 = f1.message(2, emptyMsg().                 // additional fields
+			message(1, emptyMsg()).
+			message(2, emptyMsg()).
+			message(3, emptyMsg()))
+	f1 = f1.message(3, emptyMsg().                 // more fields
+			message(1, emptyMsg()).
+			message(2, emptyMsg()))
+	f1 = f1.message(5, emptyMsg().                 // unknown
+			message(1, emptyMsg()).
+			message(5, emptyMsg().
+				message(1, emptyMsg()).
+				message(2, emptyMsg())))
+	f1 = f1.message(9, emptyMsg().                 // unknown
+			message(1, emptyMsg()).
+			message(2, emptyMsg()))
+	f1 = f1.message(11, emptyMsg().message(1, emptyMsg()))
+	f1 = f1.message(12, emptyMsg().message(1, emptyMsg()))
+	f1 = f1.message(13, emptyMsg().message(1, emptyMsg().message(1, emptyMsg())))
+	f1 = f1.message(15, emptyMsg().message(1, emptyMsg()).message(2, emptyMsg()))
+	f1 = f1.message(18, emptyMsg().message(1, emptyMsg()))
+	f1 = f1.message(19, emptyMsg().message(1, emptyMsg()))
+	f1 = f1.message(20, emptyMsg().message(1, emptyMsg()).message(2, emptyMsg()).message(3, emptyMsg()))
+	f1 = f1.message(21, emptyMsg().message(1, emptyMsg()).message(2, emptyMsg()))
+	f1 = f1.message(22, emptyMsg().message(1, emptyMsg()))
+	f1 = f1.message(25, emptyMsg().message(1, emptyMsg()))
+
+	return f1
+}
+
+// EncodeGetLibraryState builds the request to get the initial library state
+// or trigger a delta sync. Pass empty syncToken for the first full sync.
+func EncodeGetLibraryState(syncToken string) []byte {
+	f1 := buildFieldMask()
+	if syncToken != "" {
+		f1 = f1.str(6, syncToken)
+	}
+	f1 = f1.varint(7, 2)
+
+	var b pbBuilder
+	b = b.message(1, f1)
+	return b
+}
+
+// EncodeGetLibraryPage builds the request to get the next page of library items.
+// Pass the resumeToken from the previous response.
+func EncodeGetLibraryPage(resumeToken string) []byte {
+	f1 := buildFieldMask()
+	f1 = f1.str(4, resumeToken)
+	f1 = f1.varint(7, 2)
+
+	var b pbBuilder
+	b = b.message(1, f1)
+	return b
+}
+
+// LibraryItem holds the essential fields from a Google Photos media item.
+type LibraryItem struct {
+	MediaKey  string
+	FileName  string
+	SizeBytes int64
+	Timestamp int64 // UTC epoch seconds
+	IsVideo   bool
+}
+
+// msgsAt returns all occurrences of field num as parsed nested messages.
+// Use this for repeated message fields.
+func (f pbFields) msgsAt(num protowire.Number) []pbFields {
+	vs, ok := f[num]
+	if !ok {
+		return nil
+	}
+	var result []pbFields
+	for _, v := range vs {
+		if v.bytes == nil {
+			continue
+		}
+		nested, err := parsePBFields(v.bytes)
+		if err != nil {
+			continue
+		}
+		result = append(result, nested)
+	}
+	return result
+}
+
+// DecodeLibraryResponse parses the response from the library listing endpoint.
+// Returns the sync/resume tokens for pagination and the list of media items.
+func DecodeLibraryResponse(data []byte) (syncToken, resumeToken string, items []LibraryItem, err error) {
+	root, err := parsePBFields(data)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("gotohp: failed to parse library response: %w", err)
+	}
+
+	container := root.msg(1)
+	if container == nil {
+		return "", "", nil, fmt.Errorf("gotohp: library response missing container (field 1)")
+	}
+
+	resumeToken = container.strAt(1)
+	syncToken = container.strAt(6)
+
+	// Parse media items (field 2, repeated)
+	for _, itemFields := range container.msgsAt(2) {
+		item := LibraryItem{
+			MediaKey: itemFields.strAt(1),
+		}
+
+		// Metadata is in field 2
+		metadata := itemFields.msg(2)
+		if metadata != nil {
+			item.FileName = metadata.strAt(4)
+			item.SizeBytes = int64(metadata.varintAt(10))
+			item.Timestamp = int64(metadata.varintAt(7))
+		}
+
+		// Content type is in field 5
+		content := itemFields.msg(5)
+		if content != nil {
+			item.IsVideo = content.varintAt(1) == 1
+		}
+
+		if item.MediaKey != "" {
+			items = append(items, item)
+		}
+	}
+
+	return syncToken, resumeToken, items, nil
+}

@@ -53,6 +53,7 @@ const (
 	defaultCommitEndpoint      = "https://photosdata-pa.googleapis.com/6439526531001121323/16538846908252377752"
 	defaultCreateAlbumEndpoint = "https://photosdata-pa.googleapis.com/6439526531001121323/8386163679468898444"
 	defaultAddToAlbumEndpoint  = "https://photosdata-pa.googleapis.com/6439526531001121323/484917746253879292"
+	defaultLibraryEndpoint     = "https://photosdata-pa.googleapis.com/6439526531001121323/18047484249733410717"
 	defaultAuthEndpoint        = "https://android.googleapis.com/auth"
 )
 
@@ -99,6 +100,7 @@ type Client struct {
 	commitEndpoint      string
 	createAlbumEndpoint string
 	addToAlbumEndpoint  string
+	libraryEndpoint     string
 
 	mu           sync.Mutex
 	cachedBearer string
@@ -125,6 +127,7 @@ func NewClient(httpClient *http.Client, authRaw string, quality Quality, useQuot
 		commitEndpoint:      defaultCommitEndpoint,
 		createAlbumEndpoint: defaultCreateAlbumEndpoint,
 		addToAlbumEndpoint:  defaultAddToAlbumEndpoint,
+		libraryEndpoint:     defaultLibraryEndpoint,
 	}
 	c.userAgent = fmt.Sprintf(
 		"com.google.android.apps.photos/%d (Linux; U; Android 9; %s; %s; Build/PQ2A.190205.001; Cronet/127.0.6510.5) (gzip)",
@@ -440,6 +443,53 @@ func (c *Client) CreateAlbum(ctx context.Context, albumName string, mediaKeys []
 		return "", err
 	}
 	return DecodeCreateAlbumResponseAlbumMediaKey(respBody)
+}
+
+// ListLibrary enumerates all media items in the user's Google Photos library.
+// It handles pagination internally, calling the callback for each batch of items.
+// The returned syncToken can be saved and passed to future calls for delta sync.
+func (c *Client) ListLibrary(ctx context.Context, syncToken string, fn func(items []LibraryItem) error) (newSyncToken string, err error) {
+	// Step 1: Get library state (initial sync or delta)
+	body := EncodeGetLibraryState(syncToken)
+	respBody, err := c.postProtobuf(ctx, c.libraryEndpoint, body, true)
+	if err != nil {
+		return "", fmt.Errorf("gotohp: list library state failed: %w", err)
+	}
+
+	newSyncToken, resumeToken, items, err := DecodeLibraryResponse(respBody)
+	if err != nil {
+		return "", err
+	}
+	if len(items) > 0 {
+		if err := fn(items); err != nil {
+			return newSyncToken, err
+		}
+	}
+
+	// Step 2: Paginate until resumeToken is empty
+	for resumeToken != "" {
+		if ctx.Err() != nil {
+			return newSyncToken, ctx.Err()
+		}
+		body = EncodeGetLibraryPage(resumeToken)
+		respBody, err = c.postProtobuf(ctx, c.libraryEndpoint, body, true)
+		if err != nil {
+			return newSyncToken, fmt.Errorf("gotohp: list library page failed: %w", err)
+		}
+
+		var pageItems []LibraryItem
+		_, resumeToken, pageItems, err = DecodeLibraryResponse(respBody)
+		if err != nil {
+			return newSyncToken, err
+		}
+		if len(pageItems) > 0 {
+			if err := fn(pageItems); err != nil {
+				return newSyncToken, err
+			}
+		}
+	}
+
+	return newSyncToken, nil
 }
 
 // AddMediaToAlbum adds media items to an existing album by its album media
