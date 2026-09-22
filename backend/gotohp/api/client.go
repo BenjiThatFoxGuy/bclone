@@ -503,6 +503,40 @@ func (c *Client) AddMediaToAlbum(ctx context.Context, albumMediaKey string, medi
 	return err
 }
 
+// DownloadMedia downloads the original file for a media item by its media key.
+// Returns a ReadCloser for streaming the content. Supports range requests via
+// fs.OpenOption (SeekOption, RangeOption).
+func (c *Client) DownloadMedia(ctx context.Context, mediaKey string) (io.ReadCloser, error) {
+	bearer, err := c.bearerToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Download original file: lh3.googleusercontent.com/p/{mediaKey}=d
+	downloadURL := fmt.Sprintf("https://lh3.googleusercontent.com/p/%s=d", mediaKey)
+	debugLog("gotohp: GET %s (download)", downloadURL)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("User-Agent", c.userAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("gotohp: download failed for %s: %w", mediaKey, err)
+	}
+	debugLog("gotohp: GET %s -> %d (%s)", downloadURL, resp.StatusCode, resp.Header.Get("Content-Length"))
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("gotohp: download failed for %s with status %d", mediaKey, resp.StatusCode)
+	}
+
+	return resp.Body, nil
+}
+
 // SetDebugLog enables verbose request logging for the API client.
 var DebugLog func(format string, args ...interface{})
 

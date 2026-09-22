@@ -508,10 +508,11 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		if !seenNames[remote] {
 			seenNames[remote] = true
 			entries = append(entries, &Object{
-				f:       f,
-				remote:  remote,
-				size:    item.SizeBytes,
-				modTime: time.Unix(item.Timestamp, 0),
+				f:        f,
+				remote:   remote,
+				size:     item.SizeBytes,
+				modTime:  time.Unix(item.Timestamp, 0),
+				mediaKey: item.MediaKey,
 			})
 		}
 	}
@@ -580,10 +581,11 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	}
 
 	return &Object{
-		f:       f,
-		remote:  remote,
-		size:    item.SizeBytes,
-		modTime: time.Unix(item.Timestamp, 0),
+		f:        f,
+		remote:   remote,
+		size:     item.SizeBytes,
+		modTime:  time.Unix(item.Timestamp, 0),
+		mediaKey: item.MediaKey,
 	}, nil
 }
 
@@ -829,11 +831,12 @@ func (f *Fs) Shutdown(ctx context.Context) error {
 
 // Object describes a gotohp object backed by the phantom cache.
 type Object struct {
-	f       *Fs
-	remote  string
-	size    int64
-	modTime time.Time
-	sha1    []byte
+	f        *Fs
+	remote   string
+	size     int64
+	modTime  time.Time
+	sha1     []byte
+	mediaKey string // Google Photos media key for download
 }
 
 // Fs returns the parent Fs.
@@ -873,41 +876,45 @@ type readCloser struct {
 	io.Closer
 }
 
-// Open serves the locally-spooled bytes for a recent upload, if still
-// within its lingering window (see lingerFor / NewFs). This is a
-// write-only remote: reading is only possible during that window.
+// Open reads the object content. For phantom entries (recently uploaded),
+// serves from the local spool. For library entries with a mediaKey,
+// downloads from Google Photos using the =d (original) URL suffix.
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
+	// Try phantom cache first (locally spooled recent upload)
 	entry, ok := o.f.getPhantom(o.remote)
-	if !ok || entry.localPath == "" {
-		if !o.f.deferUploads {
-			return nil, errors.New("gotohp: this is a write-only remote; reading is not supported outside mount/serve (run with --vfs-cache-mode writes to get a brief post-upload read window)")
+	if ok && entry.localPath != "" {
+		file, err := os.Open(entry.localPath)
+		if err != nil {
+			return nil, fmt.Errorf("gotohp: cached upload no longer available: %w", err)
 		}
-		return nil, errors.New("gotohp: this is a write-only remote; reading is only possible briefly after upload, and that window has passed")
-	}
-	file, err := os.Open(entry.localPath)
-	if err != nil {
-		return nil, fmt.Errorf("gotohp: cached upload no longer available: %w", err)
+
+		var offset, limit int64 = 0, -1
+		for _, opt := range options {
+			switch x := opt.(type) {
+			case *fs.SeekOption:
+				offset = x.Offset
+			case *fs.RangeOption:
+				offset, limit = x.Decode(o.size)
+			}
+		}
+		if offset > 0 {
+			if _, err := file.Seek(offset, io.SeekStart); err != nil {
+				_ = file.Close()
+				return nil, err
+			}
+		}
+		if limit >= 0 {
+			return readCloser{Reader: io.LimitReader(file, limit), Closer: file}, nil
+		}
+		return file, nil
 	}
 
-	var offset, limit int64 = 0, -1
-	for _, opt := range options {
-		switch x := opt.(type) {
-		case *fs.SeekOption:
-			offset = x.Offset
-		case *fs.RangeOption:
-			offset, limit = x.Decode(o.size)
-		}
+	// Download from Google Photos via media key
+	if o.mediaKey != "" {
+		return o.f.client.DownloadMedia(ctx, o.mediaKey)
 	}
-	if offset > 0 {
-		if _, err := file.Seek(offset, io.SeekStart); err != nil {
-			_ = file.Close()
-			return nil, err
-		}
-	}
-	if limit >= 0 {
-		return readCloser{Reader: io.LimitReader(file, limit), Closer: file}, nil
-	}
-	return file, nil
+
+	return nil, errors.New("gotohp: cannot read this object (no local cache and no media key)")
 }
 
 // Update replaces this object's content, following the same spool +
