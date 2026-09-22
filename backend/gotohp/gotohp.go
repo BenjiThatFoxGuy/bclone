@@ -63,9 +63,8 @@ this one album regardless of path.
 
 When unset (the default), paths are used to route uploads instead:
 
-    gotohp:NewAlbum/<AlbumName>/<file>       create-or-get album <AlbumName>
-    gotohp:FindAlbum/<AlbumName>/<file>      find album by name (create-or-get)
-    gotohp:ExistingAlbum/<AlbumID>/<file>    add to album by its literal ID
+    gotohp:Album/<AlbumName>/<file>          create-or-get album by name (listable)
+    gotohp:ExistingAlbum/<AlbumID>/<file>    add to album by its literal ID (not listable)
     gotohp:<file>                            upload loose, no album`,
 		}, {
 			Name:     "quality",
@@ -130,10 +129,9 @@ type Options struct {
 type albumMode int
 
 const (
-	albumNone albumMode = iota
-	albumNew
-	albumExisting
-	albumFind // like albumNew but semantically "find existing album by name"
+	albumNone     albumMode = iota
+	albumByName             // idempotent create-or-get by name (listable)
+	albumExisting           // direct album by literal ID (not listable)
 )
 
 // resolvedPath is the result of routing a logical remote path.
@@ -180,7 +178,7 @@ type Fs struct {
 	lingerFor    time.Duration // pre-upload settle delay and post-upload phantom lifetime when deferUploads
 
 	albumMu sync.Mutex
-	albums  map[string]string // album name -> album media key, "NewAlbum"/config-album create-or-get cache
+	albums  map[string]string // album name -> album media key, create-or-get cache
 
 	phantomDir string
 	phantomMu  sync.Mutex
@@ -289,7 +287,7 @@ func (f *Fs) Features() *fs.Features { return f.features }
 // leaf filename, per the path scheme documented on the "album" option.
 func (f *Fs) resolvePath(remote string) resolvedPath {
 	if f.opt.Album != "" {
-		return resolvedPath{mode: albumNew, albumRef: f.opt.Album, leaf: remote}
+		return resolvedPath{mode: albumByName, albumRef: f.opt.Album, leaf: remote}
 	}
 	full := remote
 	if f.root != "" {
@@ -302,12 +300,10 @@ func (f *Fs) resolvePath(remote string) resolvedPath {
 	parts := strings.SplitN(full, "/", 3)
 	if len(parts) == 3 {
 		switch parts[0] {
-		case "NewAlbum":
-			return resolvedPath{mode: albumNew, albumRef: parts[1], leaf: parts[2]}
+		case "Album", "NewAlbum", "FindAlbum": // all aliases for idempotent create-or-get
+			return resolvedPath{mode: albumByName, albumRef: parts[1], leaf: parts[2]}
 		case "ExistingAlbum":
 			return resolvedPath{mode: albumExisting, albumRef: parts[1], leaf: parts[2]}
-		case "FindAlbum":
-			return resolvedPath{mode: albumFind, albumRef: parts[1], leaf: parts[2]}
 		}
 	}
 	return resolvedPath{mode: albumNone, leaf: full}
@@ -596,7 +592,7 @@ func (f *Fs) newObject(remote string, entry *phantomEntry) *Object {
 	}
 }
 
-// Mkdir is a no-op: albums are created lazily by Put via the NewAlbum path route.
+// Mkdir is a no-op: albums are created lazily by Put via the Album path route.
 func (f *Fs) Mkdir(ctx context.Context, dir string) error { return nil }
 
 // Rmdir is a no-op: Google's API has no album deletion, and directories
@@ -765,14 +761,14 @@ func (f *Fs) uploadToGoogle(ctx context.Context, pu *pendingUpload) (string, err
 
 // addToAlbum resolves ref to an album media key and adds mediaKey to it.
 // Google's API has no create-empty-album call, so for a brand new
-// "NewAlbum" name the very first item is created together with the album
+// "Album" name the very first item is created together with the album
 // (matching gotohp's own createNewAlbum); subsequent items for the same
 // name are added to the now-cached album.
 func (f *Fs) addToAlbum(ctx context.Context, mode albumMode, ref string, mediaKey string) error {
 	if mode == albumExisting {
 		return f.client.AddMediaToAlbum(ctx, ref, []string{mediaKey})
 	}
-	// albumNew and albumFind both use create-or-get (Google's API is idempotent)
+	// albumByName uses create-or-get (Google's API is idempotent)
 	f.albumMu.Lock()
 	id, ok := f.albums[ref]
 	if !ok {
