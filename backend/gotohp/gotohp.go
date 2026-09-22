@@ -64,6 +64,7 @@ this one album regardless of path.
 When unset (the default), paths are used to route uploads instead:
 
     gotohp:NewAlbum/<AlbumName>/<file>       create-or-get album <AlbumName>
+    gotohp:FindAlbum/<AlbumName>/<file>      find album by name (create-or-get)
     gotohp:ExistingAlbum/<AlbumID>/<file>    add to album by its literal ID
     gotohp:<file>                            upload loose, no album`,
 		}, {
@@ -132,6 +133,7 @@ const (
 	albumNone albumMode = iota
 	albumNew
 	albumExisting
+	albumFind // like albumNew but semantically "find existing album by name"
 )
 
 // resolvedPath is the result of routing a logical remote path.
@@ -304,6 +306,8 @@ func (f *Fs) resolvePath(remote string) resolvedPath {
 			return resolvedPath{mode: albumNew, albumRef: parts[1], leaf: parts[2]}
 		case "ExistingAlbum":
 			return resolvedPath{mode: albumExisting, albumRef: parts[1], leaf: parts[2]}
+		case "FindAlbum":
+			return resolvedPath{mode: albumFind, albumRef: parts[1], leaf: parts[2]}
 		}
 	}
 	return resolvedPath{mode: albumNone, leaf: full}
@@ -764,6 +768,7 @@ func (f *Fs) addToAlbum(ctx context.Context, mode albumMode, ref string, mediaKe
 	if mode == albumExisting {
 		return f.client.AddMediaToAlbum(ctx, ref, []string{mediaKey})
 	}
+	// albumNew and albumFind both use create-or-get (Google's API is idempotent)
 	f.albumMu.Lock()
 	id, ok := f.albums[ref]
 	if !ok {
