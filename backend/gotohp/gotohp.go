@@ -513,6 +513,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 				size:     item.SizeBytes,
 				modTime:  time.Unix(item.Timestamp, 0),
 				mediaKey: item.MediaKey,
+				dedupKey: item.DedupKey,
 			})
 		}
 	}
@@ -586,6 +587,7 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		size:     item.SizeBytes,
 		modTime:  time.Unix(item.Timestamp, 0),
 		mediaKey: item.MediaKey,
+		dedupKey: item.DedupKey,
 	}, nil
 }
 
@@ -837,6 +839,7 @@ type Object struct {
 	modTime  time.Time
 	sha1     []byte
 	mediaKey string // Google Photos media key for download
+	dedupKey string // Google Photos dedup key for trash/delete
 }
 
 // Fs returns the parent Fs.
@@ -928,11 +931,21 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	return nil
 }
 
-// Remove cancels a still-pending (not yet committed) upload locally, or
-// fails: Google's upload API has no remote-delete call for already
-// committed media.
+// Remove moves the item to Google Photos trash (not permanent delete).
+// For phantom entries (not yet committed uploads), cancels locally.
 func (o *Object) Remove(ctx context.Context) error {
-	return o.f.removeObject(o.remote)
+	// Try phantom removal first (pending/recently uploaded)
+	if err := o.f.removeObject(o.remote); err == nil {
+		return nil
+	}
+
+	// Move to trash via the API using dedup key
+	if o.dedupKey != "" {
+		fs.Infof(o, "Moving to Google Photos trash: %s", o.remote)
+		return o.f.client.MoveToTrash(ctx, []string{o.dedupKey})
+	}
+
+	return errors.New("gotohp: cannot remove this object (no dedup key for trash)")
 }
 
 // Check interface satisfaction.

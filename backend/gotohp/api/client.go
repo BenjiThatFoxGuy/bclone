@@ -54,6 +54,7 @@ const (
 	defaultCreateAlbumEndpoint = "https://photosdata-pa.googleapis.com/6439526531001121323/8386163679468898444"
 	defaultAddToAlbumEndpoint  = "https://photosdata-pa.googleapis.com/6439526531001121323/484917746253879292"
 	defaultLibraryEndpoint     = "https://photosdata-pa.googleapis.com/6439526531001121323/18047484249733410717"
+	defaultTrashEndpoint       = "https://photosdata-pa.googleapis.com/6439526531001121323/17490284929287180316"
 	defaultAuthEndpoint        = "https://android.googleapis.com/auth"
 )
 
@@ -101,6 +102,7 @@ type Client struct {
 	createAlbumEndpoint string
 	addToAlbumEndpoint  string
 	libraryEndpoint     string
+	trashEndpoint       string
 
 	mu           sync.Mutex
 	cachedBearer string
@@ -128,6 +130,7 @@ func NewClient(httpClient *http.Client, authRaw string, quality Quality, useQuot
 		createAlbumEndpoint: defaultCreateAlbumEndpoint,
 		addToAlbumEndpoint:  defaultAddToAlbumEndpoint,
 		libraryEndpoint:     defaultLibraryEndpoint,
+		trashEndpoint:       defaultTrashEndpoint,
 	}
 	c.userAgent = fmt.Sprintf(
 		"com.google.android.apps.photos/%d (Linux; U; Android 9; %s; %s; Build/PQ2A.190205.001; Cronet/127.0.6510.5) (gzip)",
@@ -500,6 +503,14 @@ func (c *Client) AddMediaToAlbum(ctx context.Context, albumMediaKey string, medi
 	model, deviceMk := c.deviceIdentity()
 	body := EncodeAddMediaToAlbum(mediaKeys, albumMediaKey, time.Now().Unix(), model, deviceMk, androidAPIVersion)
 	_, err := c.postProtobuf(ctx, c.addToAlbumEndpoint, body, true)
+	return err
+}
+
+// MoveToTrash moves media items to the Google Photos trash (not permanent delete).
+// Items can be restored from trash within 60 days.
+func (c *Client) MoveToTrash(ctx context.Context, dedupKeys []string) error {
+	body := EncodeMoveToTrash(dedupKeys)
+	_, err := c.postProtobuf(ctx, c.trashEndpoint, body, false)
 	return err
 }
 

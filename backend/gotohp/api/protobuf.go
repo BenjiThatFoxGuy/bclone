@@ -431,12 +431,35 @@ func EncodeGetLibraryPage(resumeToken string) []byte {
 
 // LibraryItem holds the essential fields from a Google Photos media item.
 type LibraryItem struct {
-	MediaKey  string
-	FileName  string
-	SizeBytes int64
-	Timestamp int64 // UTC epoch seconds
-	IsVideo   bool
+	MediaKey  string `json:"media_key"`
+	FileName  string `json:"file_name"`
+	SizeBytes int64  `json:"size_bytes"`
+	Timestamp int64  `json:"timestamp"` // UTC epoch seconds
+	IsVideo   bool   `json:"is_video"`
+	DedupKey  string `json:"dedup_key,omitempty"` // needed for trash/delete operations
 }
+
+// EncodeMoveToTrash builds the protobuf request to move items to trash.
+// Uses dedup_keys as identifiers (same as gpmc).
+func EncodeMoveToTrash(dedupKeys []string) []byte {
+	var b pbBuilder
+	b = b.varint(2, 1) // action = trash (not permanent delete)
+	for _, key := range dedupKeys {
+		b = b.str(3, key)
+	}
+	b = b.varint(4, 1)
+	b = b.message(8, pbBuilder{}.message(4,
+		pbBuilder{}.message(2, emptyMsg()).message(3, pbBuilder{}.message(1, emptyMsg())).
+			message(4, emptyMsg()).message(5, pbBuilder{}.message(1, emptyMsg()))))
+	// Field 9: client info
+	b = b.message(9, pbBuilder{}.varint(1, 5).
+		message(2, pbBuilder{}.varint(1, uint64(clientVersionCode)).
+			str(2, fmt.Sprintf("%d", androidAPIVersion))))
+	return b
+}
+
+// emptyMsg is a convenience for building empty nested messages (field mask entries).
+func emptyMsg() pbBuilder { return pbBuilder{} }
 
 // msgsAt returns all occurrences of field num as parsed nested messages.
 // Use this for repeated message fields.
@@ -487,6 +510,29 @@ func DecodeLibraryResponse(data []byte) (syncToken, resumeToken string, items []
 			item.FileName = metadata.strAt(4)
 			item.SizeBytes = int64(metadata.varintAt(10))
 			item.Timestamp = int64(metadata.varintAt(7))
+		}
+
+		// Dedup key is in field 2.21 (nested, first sub-field value)
+		// or field 2.13.1 as fallback
+		if metadata != nil {
+			dedupContainer := metadata.msg(21)
+			if dedupContainer != nil {
+				// The dedup key is the string value of the first sub-field found
+				for _, vs := range dedupContainer {
+					if len(vs) > 0 && vs[0].bytes != nil {
+						item.DedupKey = string(vs[0].bytes)
+						break
+					}
+				}
+			}
+			if item.DedupKey == "" {
+				hashContainer := metadata.msg(13)
+				if hashContainer != nil {
+					if hashBytes := hashContainer.bytesAt(1); hashBytes != nil {
+						item.DedupKey = fmt.Sprintf("%x", hashBytes)
+					}
+				}
+			}
 		}
 
 		// Content type is in field 5
