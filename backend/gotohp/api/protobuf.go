@@ -431,12 +431,13 @@ func EncodeGetLibraryPage(resumeToken string) []byte {
 
 // LibraryItem holds the essential fields from a Google Photos media item.
 type LibraryItem struct {
-	MediaKey  string `json:"media_key"`
-	FileName  string `json:"file_name"`
-	SizeBytes int64  `json:"size_bytes"`
-	Timestamp int64  `json:"timestamp"` // UTC epoch seconds
-	IsVideo   bool   `json:"is_video"`
-	DedupKey  string `json:"dedup_key,omitempty"` // needed for trash/delete operations
+	MediaKey     string `json:"media_key"`
+	FileName     string `json:"file_name"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Timestamp    int64  `json:"timestamp"` // UTC epoch seconds
+	IsVideo      bool   `json:"is_video"`
+	DedupKey     string `json:"dedup_key,omitempty"`     // needed for trash/delete operations
+	CollectionID string `json:"collection_id,omitempty"` // album/collection this item belongs to
 }
 
 // EncodeMoveToTrash builds the protobuf request to move items to trash.
@@ -510,6 +511,11 @@ func DecodeLibraryResponse(data []byte) (syncToken, resumeToken string, items []
 			item.FileName = metadata.strAt(4)
 			item.SizeBytes = int64(metadata.varintAt(10))
 			item.Timestamp = int64(metadata.varintAt(7))
+			// Collection ID at field 2.1.1
+			metaF1 := metadata.msg(1)
+			if metaF1 != nil {
+				item.CollectionID = metaF1.strAt(1)
+			}
 		}
 
 		// Dedup key is in field 2.21 (nested, first sub-field value)

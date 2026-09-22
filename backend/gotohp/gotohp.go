@@ -475,50 +475,119 @@ func (f *Fs) refreshLibraryCache(ctx context.Context) error {
 
 // List returns entries under dir from the Google Photos library cache,
 // merged with any recently-uploaded phantom entries.
+//
+// Path routing:
+//   - "" (root): show Album/ dir + loose library files
+//   - "Album": show album names as directories (from collection IDs)
+//   - "Album/<name>": show files in that album
+//   - "ExistingAlbum": show empty dir (placeholder for mount apps)
 func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	// Refresh library cache if needed
 	if err := f.refreshLibraryCache(ctx); err != nil {
 		fs.Debugf(f, "Library listing failed, falling back to phantom-only: %v", err)
 	}
 
-	prefix := dir
-	if prefix != "" {
-		prefix += "/"
+	// Resolve the full path including root
+	fullDir := dir
+	if f.root != "" {
+		if fullDir == "" {
+			fullDir = f.root
+		} else {
+			fullDir = f.root + "/" + fullDir
+		}
 	}
+
 	var entries fs.DirEntries
 	seenNames := map[string]bool{}
 
-	// Library items (real remote data)
-	// Google Photos returns flat filenames (no directories), so we treat
-	// them as living at the root level regardless of f.root. For rclone
-	// sync to match source files to destination files, we use the bare
-	// filename as the remote path.
 	f.libMu.Lock()
-	for _, item := range f.libCache {
-		remote := item.FileName
-		// Only list items at the requested directory level (root = "")
-		if dir != "" {
-			continue // library items are flat, no subdirectories
+
+	switch {
+	case fullDir == "" || fullDir == f.root:
+		// Root level: show Album/ and ExistingAlbum/ dirs + loose files
+		entries = append(entries, fs.NewDir("Album", time.Now()))
+		entries = append(entries, fs.NewDir("ExistingAlbum", time.Now()))
+		seenNames["Album"] = true
+		seenNames["ExistingAlbum"] = true
+
+		// Also show loose library files at root
+		for _, item := range f.libCache {
+			if item.FileName == "" || item.CollectionID != "" {
+				continue // skip items in albums, show only loose
+			}
+			remote := item.FileName
+			if !seenNames[remote] {
+				seenNames[remote] = true
+				entries = append(entries, &Object{
+					f: f, remote: remote, size: item.SizeBytes,
+					modTime: time.Unix(item.Timestamp, 0),
+					mediaKey: item.MediaKey, dedupKey: item.DedupKey,
+				})
+			}
 		}
-		if remote == "" {
-			continue
+
+	case fullDir == "Album" || (f.root != "" && fullDir == f.root+"/Album"):
+		// Album listing: show unique album names as directories
+		// Build album name -> collection ID mapping from items
+		albumNames := map[string]bool{}
+		for _, item := range f.libCache {
+			if item.CollectionID != "" {
+				// We don't have album names from the listing, just IDs.
+				// Use collection ID as the directory name for now.
+				if !albumNames[item.CollectionID] {
+					albumNames[item.CollectionID] = true
+					displayDir := "Album/" + item.CollectionID
+					if f.root != "" {
+						displayDir = strings.TrimPrefix(displayDir, f.root+"/")
+					}
+					entries = append(entries, fs.NewDir(item.CollectionID, time.Now()))
+				}
+			}
 		}
-		if !seenNames[remote] {
-			seenNames[remote] = true
-			entries = append(entries, &Object{
-				f:        f,
-				remote:   remote,
-				size:     item.SizeBytes,
-				modTime:  time.Unix(item.Timestamp, 0),
-				mediaKey: item.MediaKey,
-				dedupKey: item.DedupKey,
-			})
+
+	case strings.HasPrefix(fullDir, "Album/") || (f.root != "" && strings.HasPrefix(fullDir, f.root+"/Album/")):
+		// Album contents: show files in a specific album
+		var albumID string
+		if f.root != "" {
+			albumID = strings.TrimPrefix(fullDir, f.root+"/Album/")
+		} else {
+			albumID = strings.TrimPrefix(fullDir, "Album/")
 		}
+		for _, item := range f.libCache {
+			if item.CollectionID == albumID && item.FileName != "" {
+				remote := item.FileName
+				if !seenNames[remote] {
+					seenNames[remote] = true
+					// Build remote relative to the dir being listed
+					listRemote := dir + "/" + remote
+					if dir == "" {
+						listRemote = remote
+					}
+					entries = append(entries, &Object{
+						f: f, remote: listRemote, size: item.SizeBytes,
+						modTime: time.Unix(item.Timestamp, 0),
+						mediaKey: item.MediaKey, dedupKey: item.DedupKey,
+					})
+				}
+			}
+		}
+
+	case fullDir == "ExistingAlbum" || (f.root != "" && fullDir == f.root+"/ExistingAlbum"):
+		// ExistingAlbum: empty placeholder dir for mount apps
+		// Nothing to list - files are accessed by direct path only
+
+	default:
+		// Unknown path - show nothing
 	}
+
 	f.libMu.Unlock()
 
 	// Phantom entries (recently uploaded, not yet in library cache)
 	if f.deferUploads {
+		prefix := dir
+		if prefix != "" {
+			prefix += "/"
+		}
 		f.sweepPhantom()
 		f.phantomMu.Lock()
 		for remote, entry := range f.phantom {
