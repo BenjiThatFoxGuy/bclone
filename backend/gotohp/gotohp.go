@@ -177,8 +177,9 @@ type Fs struct {
 	deferUploads bool          // auto-detected: --vfs-cache-mode is on, i.e. running under mount/serve
 	lingerFor    time.Duration // pre-upload settle delay and post-upload phantom lifetime when deferUploads
 
-	albumMu sync.Mutex
-	albums  map[string]string // album name -> album media key, create-or-get cache
+	albumMu     sync.Mutex
+	albums      map[string]string // album name -> album media key
+	albumByKey  map[string]string // album media key -> album name (reverse)
 
 	phantomDir string
 	phantomMu  sync.Mutex
@@ -246,6 +247,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		deferUploads: deferUploads,
 		lingerFor:    lingerFor,
 		albums:       map[string]string{},
+		albumByKey:   map[string]string{},
 		phantomDir:   spoolDir,
 		phantom:      map[string]*phantomEntry{},
 		pending:      map[string]*pendingUpload{},
@@ -472,6 +474,7 @@ func (f *Fs) refreshLibraryCache(ctx context.Context) error {
 				if album.Title != "" && album.MediaKey != "" {
 					// API is source of truth - always overwrite local cache
 					f.albums[album.Title] = album.MediaKey
+					f.albumByKey[album.MediaKey] = album.Title
 				}
 			}
 			f.albumMu.Unlock()
@@ -561,7 +564,8 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		f.albumMu.Lock()
 		for name := range f.albums {
 			if name != "" {
-				entries = append(entries, fs.NewDir(name, time.Now()))
+				// Entries must include the dir prefix for rclone's path matching
+				entries = append(entries, fs.NewDir(dir+"/"+name, time.Now()))
 			}
 		}
 		f.albumMu.Unlock()
@@ -580,9 +584,22 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		f.albumMu.Unlock()
 
 		if albumKey != "" {
-			// Find items with matching collection_id
+			// Find items belonging to this album.
+			// Match by: collection_id == album media key, OR
+			// collection_id maps to this album name via reverse lookup.
 			for _, item := range f.libCache {
-				if item.CollectionID == albumKey && item.FileName != "" {
+				if item.FileName == "" || item.CollectionID == "" {
+					continue
+				}
+				// Check if this item belongs to the requested album
+				belongsToAlbum := item.CollectionID == albumKey
+				if !belongsToAlbum {
+					f.albumMu.Lock()
+					ownerName := f.albumByKey[item.CollectionID]
+					f.albumMu.Unlock()
+					belongsToAlbum = ownerName == albumName
+				}
+				if belongsToAlbum {
 					remote := item.FileName
 					if !seenNames[remote] {
 						seenNames[remote] = true
@@ -599,6 +616,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 				}
 			}
 		}
+		fs.Debugf(f, "Album %q (key=%s): found %d items", albumName, albumKey, len(entries))
 
 	case fullDir == "ExistingAlbum" || (f.root != "" && fullDir == f.root+"/ExistingAlbum"):
 		// ExistingAlbum: empty placeholder dir for mount apps
