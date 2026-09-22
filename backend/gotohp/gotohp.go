@@ -379,7 +379,11 @@ func (f *Fs) loadLibraryCache() {
 		fs.Debugf(f, "Library cache file corrupt, ignoring: %v", err)
 		return
 	}
-	f.libCache = cached.Items
+	if cached.Items != nil {
+		f.libCache = cached.Items
+	} else {
+		f.libCache = make(map[string]*api.LibraryItem)
+	}
 	f.libSyncToken = cached.SyncToken
 	f.libCacheTime = cached.SavedAt
 	fs.Infof(f, "Loaded library cache from disk: %d items, sync_token=%q", len(f.libCache), f.libSyncToken[:min(20, len(f.libSyncToken))]+"...")
@@ -489,24 +493,18 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	seenNames := map[string]bool{}
 
 	// Library items (real remote data)
+	// Google Photos returns flat filenames (no directories), so we treat
+	// them as living at the root level regardless of f.root. For rclone
+	// sync to match source files to destination files, we use the bare
+	// filename as the remote path.
 	f.libMu.Lock()
-	for fileName, item := range f.libCache {
-		remote := fileName
-		if f.root != "" {
-			if !strings.HasPrefix(remote, f.root+"/") {
-				continue
-			}
-			remote = strings.TrimPrefix(remote, f.root+"/")
+	for _, item := range f.libCache {
+		remote := item.FileName
+		// Only list items at the requested directory level (root = "")
+		if dir != "" {
+			continue // library items are flat, no subdirectories
 		}
-		if dir != "" && !strings.HasPrefix(remote, prefix) {
-			continue
-		}
-		rest := strings.TrimPrefix(remote, prefix)
-		if rest == "" {
-			continue
-		}
-		if strings.ContainsRune(rest, '/') {
-			// Subdirectory - we don't synthesize dirs from library items
+		if remote == "" {
 			continue
 		}
 		if !seenNames[remote] {
@@ -565,21 +563,14 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		return nil, fs.ErrorObjectNotFound
 	}
 
-	fileName := remote
-	if f.root != "" {
-		fileName = f.root + "/" + remote
-	}
-
+	// Library items are keyed by flat filename. Try the remote as-is first,
+	// then fall back to the base name (strips any path prefix).
 	f.libMu.Lock()
-	item, ok := f.libCache[fileName]
-	f.libMu.Unlock()
-
+	item, ok := f.libCache[remote]
 	if !ok {
-		// Also try without root prefix (library items might be stored by filename only)
-		f.libMu.Lock()
 		item, ok = f.libCache[path.Base(remote)]
-		f.libMu.Unlock()
 	}
+	f.libMu.Unlock()
 
 	if !ok {
 		return nil, fs.ErrorObjectNotFound
@@ -643,10 +634,23 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 
 	if !f.deferUploads {
 		defer func() { _ = os.Remove(localPath) }()
-		if _, err := f.uploadToGoogle(ctx, pu); err != nil {
+		mediaKey, err := f.uploadToGoogle(ctx, pu)
+		if err != nil {
 			return nil, err
 		}
-		return &Object{f: f, remote: remote, size: size, modTime: modTime, sha1: sha1Sum}, nil
+		// Update library cache so subsequent List/NewObject calls see this file
+		// without needing a full refresh from Google's API.
+		f.libMu.Lock()
+		f.libCache[path.Base(rp.leaf)] = &api.LibraryItem{
+			MediaKey:  mediaKey,
+			FileName:  path.Base(rp.leaf),
+			SizeBytes: size,
+			Timestamp: modTime.Unix(),
+		}
+		f.libMu.Unlock()
+		// Persist updated cache to disk
+		f.saveLibraryCache()
+		return &Object{f: f, remote: remote, size: size, modTime: modTime, sha1: sha1Sum, mediaKey: mediaKey}, nil
 	}
 
 	entry := &phantomEntry{
@@ -870,9 +874,13 @@ func (o *Object) SetModTime(ctx context.Context, t time.Time) error {
 	return fs.ErrorCantSetModTime
 }
 
-// Hash returns the SHA1 computed at upload time.
+// Hash returns the SHA1 computed at upload time. Library-sourced objects
+// do not have a hash available and return ErrUnsupported.
 func (o *Object) Hash(ctx context.Context, ht hash.Type) (string, error) {
 	if ht != hash.SHA1 {
+		return "", hash.ErrUnsupported
+	}
+	if len(o.sha1) == 0 {
 		return "", hash.ErrUnsupported
 	}
 	return hex.EncodeToString(o.sha1), nil
