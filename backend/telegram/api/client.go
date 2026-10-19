@@ -13,6 +13,7 @@ import (
 
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
@@ -54,6 +55,9 @@ type Client struct {
 	// Upload/download helpers.
 	uploader   *uploader.Uploader
 	downloader *downloader.Downloader
+
+	// cancelRun shuts down a config-time connection (set by ConnectRaw).
+	cancelRun context.CancelFunc
 }
 
 // ConfigSessionStorage adapts gotd's session.Storage interface to store
@@ -225,6 +229,192 @@ func (c *Client) doConnect(ctx context.Context) error {
 // SessionData returns the current session as a base64 string for persistence.
 func (c *Client) SessionData() string {
 	return c.sessionStorage.Encode()
+}
+
+// --- Config-time auth methods (used during rclone config, not runtime) ---
+
+// initClient creates the gotd client without running it yet.
+func (c *Client) initClient() {
+	if c.client != nil {
+		return
+	}
+	c.client = telegram.NewClient(c.appID, c.appHash, telegram.Options{
+		SessionStorage: c.sessionStorage,
+		Device: telegram.DeviceConfig{
+			DeviceModel:    c.deviceModel,
+			SystemVersion:  c.systemVersion,
+			AppVersion:     c.appVersion,
+			SystemLangCode: "en",
+			LangPack:       "",
+			LangCode:       "en",
+		},
+	})
+}
+
+// runClient starts the gotd client and executes fn inside the connection.
+// The connection is kept alive until the returned cancel function is called
+// or the context is cancelled.
+func (c *Client) runClient(ctx context.Context, fn func(ctx context.Context) error) error {
+	c.initClient()
+
+	// Create a cancellable child context so we can shut down the connection
+	// after the work function completes.
+	runCtx, cancel := context.WithCancel(ctx)
+
+	ready := make(chan error, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- c.client.Run(runCtx, func(ctx context.Context) error {
+			c.api = c.client.API()
+			err := fn(ctx)
+			ready <- err
+			if err != nil {
+				cancel()
+				return err
+			}
+			// Keep connection alive until cancelled.
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case err := <-ready:
+		if err != nil {
+			cancel()
+			<-done
+			return err
+		}
+		// Connection is alive. Store the cancel for later cleanup.
+		// For config-time operations we just cancel immediately after
+		// the auth completes - we don't need the connection to stay up.
+		cancel()
+		<-done
+		return nil
+	case err := <-done:
+		cancel()
+		return err
+	case <-ctx.Done():
+		cancel()
+		return ctx.Err()
+	}
+}
+
+// ConnectAndAuthBot connects and authenticates as a bot in one shot.
+// Used during rclone config.
+func (c *Client) ConnectAndAuthBot(ctx context.Context) error {
+	return c.runClient(ctx, func(ctx context.Context) error {
+		if _, err := c.client.Auth().Bot(ctx, c.botToken); err != nil {
+			if !isAlreadyAuthorized(err) {
+				return fmt.Errorf("bot auth: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// ConnectAndSendCode connects and sends an auth code to the phone number.
+// Returns the code hash needed for SignIn. Used during rclone config.
+func (c *Client) ConnectAndSendCode(ctx context.Context) (codeHash string, err error) {
+	err = c.runClient(ctx, func(ctx context.Context) error {
+		sentCode, err := c.client.Auth().SendCode(ctx, c.phone, auth.SendCodeOptions{})
+		if err != nil {
+			return fmt.Errorf("send code: %w", err)
+		}
+		// Extract the phone code hash from the response.
+		switch sc := sentCode.(type) {
+		case *tg.AuthSentCode:
+			codeHash = sc.GetPhoneCodeHash()
+		case *tg.AuthSentCodeSuccess:
+			// Already authorized somehow.
+			codeHash = ""
+		default:
+			return fmt.Errorf("unexpected SendCode response type: %T", sentCode)
+		}
+		return nil
+	})
+	return codeHash, err
+}
+
+// ConnectRaw connects to Telegram without authenticating.
+// Used to resume a partially-completed auth flow.
+func (c *Client) ConnectRaw(ctx context.Context) error {
+	c.initClient()
+
+	// We need the client running to make API calls. Start it in background.
+	runCtx, cancel := context.WithCancel(ctx)
+	c.cancelRun = cancel
+
+	ready := make(chan struct{})
+	go func() {
+		_ = c.client.Run(runCtx, func(ctx context.Context) error {
+			c.api = c.client.API()
+			close(ready)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case <-ready:
+		return nil
+	case <-ctx.Done():
+		cancel()
+		return ctx.Err()
+	}
+}
+
+// SignIn verifies the phone code. Returns true if 2FA is needed.
+func (c *Client) SignIn(ctx context.Context, code, codeHash string) (needs2FA bool, err error) {
+	req := &tg.AuthSignInRequest{
+		PhoneNumber:   c.phone,
+		PhoneCodeHash: codeHash,
+	}
+	req.SetPhoneCode(code)
+
+	_, signInErr := c.api.AuthSignIn(ctx, req)
+	if signInErr != nil {
+		if tgerr.Is(signInErr, "SESSION_PASSWORD_NEEDED") {
+			return true, nil
+		}
+		return false, fmt.Errorf("sign in: %w", signInErr)
+	}
+	return false, nil
+}
+
+// CheckPassword verifies the 2FA password.
+func (c *Client) CheckPassword(ctx context.Context, password string) error {
+	// Get the SRP parameters from the server.
+	ap, err := c.api.AccountGetPassword(ctx)
+	if err != nil {
+		return fmt.Errorf("get password params: %w", err)
+	}
+
+	// Use gotd's auth helper to compute the SRP check.
+	inputCheck, err := auth.PasswordHash(
+		[]byte(password),
+		ap.SRPID,
+		ap.SRPB,
+		ap.SecureRandom,
+		ap.CurrentAlgo,
+	)
+	if err != nil {
+		return fmt.Errorf("compute password hash: %w", err)
+	}
+
+	_, err = c.api.AuthCheckPassword(ctx, inputCheck)
+	if err != nil {
+		return fmt.Errorf("check password: %w", err)
+	}
+	return nil
+}
+
+// Close shuts down the connection (for config-time clients).
+func (c *Client) Close() {
+	if c.cancelRun != nil {
+		c.cancelRun()
+	}
 }
 
 // IsPremium returns whether the authenticated account has Telegram Premium.

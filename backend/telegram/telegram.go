@@ -42,9 +42,10 @@ func init() {
 			return configHandler(ctx, name, m, config)
 		},
 		Options: []fs.Option{{
-			Name:      "bot_token",
-			Help:      "Bot token from @BotFather. If set, bot mode is used.\nLeave empty for user session mode (requires phone).",
+			Name:      "login",
+			Help:      "Bot token (from @BotFather) or phone number with country code (e.g. +1234567890).\nA value containing ':' is treated as a bot token; otherwise as a phone number.",
 			Sensitive: true,
+			Required:  true,
 		}, {
 			Name:      "api_id",
 			Help:      "Telegram API ID from https://my.telegram.org",
@@ -55,10 +56,6 @@ func init() {
 			Help:      "Telegram API Hash from https://my.telegram.org",
 			Sensitive: true,
 			Required:  true,
-		}, {
-			Name:      "phone",
-			Help:      "Phone number with country code (e.g., +1234567890).\nRequired for user session mode. Leave empty for bot mode.",
-			Sensitive: true,
 		}, {
 			Name:     "device_model",
 			Help:     "Device model reported to Telegram.",
@@ -85,15 +82,13 @@ func init() {
 				Value: "all",
 				Help:  "Documents, photos, and videos.",
 			}},
-			Advanced: true,
 		}, {
-			Name:     "send_as_photo",
-			Help:     "Send image files as photos instead of documents.\nUses Telegram's high-res photo mode. Other files are always sent as documents.",
-			Default:  false,
-			Advanced: true,
+			Name:    "send_as_photo",
+			Help:    "Send image files as photos instead of documents.\nUses Telegram's photo mode. Other files are always sent as documents.",
+			Default: false,
 		}, {
 			Name:     "restrict_saving_bypass",
-			Help:     "Allow access to files in chats with content protection (restrict saving).\nOnly effective when you are not an admin — admins always have access.\nServer-side copy is never available for protected chats; rclone will reupload.",
+			Help:     "Allow access to files in chats with content protection (restrict saving).\nOnly effective when you are not an admin - admins always have access.\nServer-side copy is never available for protected chats; rclone will reupload.",
 			Default:  false,
 			Advanced: true,
 		}, {
@@ -112,23 +107,176 @@ func init() {
 }
 
 // configHandler implements the interactive config flow.
-// Auth mode is inferred from which credentials are provided.
-func configHandler(ctx context.Context, name string, m configmap.Mapper, config fs.ConfigIn) (*fs.ConfigOut, error) {
-	switch config.State {
+// Auth mode is inferred from which credentials the user supplied in the
+// standard option prompts (bot_token → bot, phone → user session).
+//
+// The state machine:
+//
+//	"" (entry) → detect mode, connect, start auth
+//	"bot_auth" → bot token auth completed, save session
+//	"user_code_sent" → code was sent, prompt user for the code
+//	"user_code_entered" → verify code, maybe prompt for 2FA
+//	"user_2fa" → verify 2FA password
+//	"auth_done" → save session, finish
+func configHandler(ctx context.Context, name string, m configmap.Mapper, conf fs.ConfigIn) (*fs.ConfigOut, error) {
+	switch conf.State {
 	case "":
-		// Entry point - nothing to do beyond the standard options.
-		// The user fills in bot_token OR phone via the normal option prompts.
+		// Entry point: the standard options have been collected.
+		// Determine auth mode from the login field.
+		login, _ := m.Get("login")
+		apiIDStr, _ := m.Get("api_id")
+		apiHash, _ := m.Get("api_hash")
+
+		if login == "" {
+			return nil, fmt.Errorf("login is required (bot token or phone number)")
+		}
+		if apiIDStr == "" || apiHash == "" {
+			return nil, fmt.Errorf("api_id and api_hash are required")
+		}
+
+		apiID, err := strconv.Atoi(apiIDStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid api_id: %w", err)
+		}
+
+		var botToken, phone string
+		if strings.Contains(login, ":") {
+			botToken = login
+		} else {
+			phone = login
+		}
+
+		deviceModel, _ := m.Get("device_model")
+		systemVersion, _ := m.Get("system_version")
+		appVersion, _ := m.Get("app_version")
+		sessionData, _ := m.Get("session")
+
+		client := api.NewClient(api.ClientOptions{
+			AppID:         apiID,
+			AppHash:       apiHash,
+			BotToken:      botToken,
+			Phone:         phone,
+			DeviceModel:   deviceModel,
+			SystemVersion: systemVersion,
+			AppVersion:    appVersion,
+			SessionData:   sessionData,
+		})
+
+		if botToken != "" {
+			// Bot mode: connect and auth in one shot.
+			if err := client.ConnectAndAuthBot(ctx); err != nil {
+				return nil, fmt.Errorf("bot auth failed: %w", err)
+			}
+			m.Set("session", client.SessionData())
+			return fs.ConfigGoto("auth_done")
+		}
+
+		// User mode: connect and send the auth code.
+		codeHash, err := client.ConnectAndSendCode(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to send auth code: %w", err)
+		}
+		// Persist the session and code hash for the next state.
+		m.Set("session", client.SessionData())
+		m.Set("config_code_hash", codeHash)
+		return fs.ConfigInput("user_code_entered", "config_auth_code",
+			"Enter the login code sent to your Telegram account.")
+
+	case "user_code_entered":
+		code := conf.Result
+		codeHash, _ := m.Get("config_code_hash")
+		if code == "" {
+			return nil, fmt.Errorf("auth code is required")
+		}
+
+		// Reconnect with the saved session and verify the code.
+		client, err := reconnectClient(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+
+		needsPassword, err := client.SignIn(ctx, code, codeHash)
+		if err != nil {
+			return nil, fmt.Errorf("sign in failed: %w", err)
+		}
+		m.Set("session", client.SessionData())
+
+		if needsPassword {
+			return fs.ConfigPassword("user_2fa", "config_2fa_password",
+				"Two-factor authentication password required.")
+		}
+		return fs.ConfigGoto("auth_done")
+
+	case "user_2fa":
+		password := conf.Result
+		if password == "" {
+			return nil, fmt.Errorf("2FA password is required")
+		}
+
+		client, err := reconnectClient(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := client.CheckPassword(ctx, password); err != nil {
+			return nil, fmt.Errorf("2FA verification failed: %w", err)
+		}
+		m.Set("session", client.SessionData())
+		return fs.ConfigGoto("auth_done")
+
+	case "auth_done":
+		// Clean up ephemeral config keys.
+		m.Set("config_code_hash", "")
+		fs.Infof(nil, "Telegram authentication successful")
 		return nil, nil
 	}
-	return nil, nil
+	return nil, fmt.Errorf("unknown config state %q", conf.State)
+}
+
+// reconnectClient creates a fresh Client from the saved config and connects it.
+func reconnectClient(ctx context.Context, m configmap.Mapper) (*api.Client, error) {
+	apiIDStr, _ := m.Get("api_id")
+	apiHash, _ := m.Get("api_hash")
+	login, _ := m.Get("login")
+	deviceModel, _ := m.Get("device_model")
+	systemVersion, _ := m.Get("system_version")
+	appVersion, _ := m.Get("app_version")
+	sessionData, _ := m.Get("session")
+
+	apiID, err := strconv.Atoi(apiIDStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid api_id: %w", err)
+	}
+
+	var botToken, phone string
+	if strings.Contains(login, ":") {
+		botToken = login
+	} else {
+		phone = login
+	}
+
+	client := api.NewClient(api.ClientOptions{
+		AppID:         apiID,
+		AppHash:       apiHash,
+		BotToken:      botToken,
+		Phone:         phone,
+		DeviceModel:   deviceModel,
+		SystemVersion: systemVersion,
+		AppVersion:    appVersion,
+		SessionData:   sessionData,
+	})
+
+	if err := client.ConnectRaw(ctx); err != nil {
+		return nil, fmt.Errorf("reconnect failed: %w", err)
+	}
+	return client, nil
 }
 
 // Options defines the configuration for this backend.
 type Options struct {
-	BotToken             string `config:"bot_token"`
+	Login                string `config:"login"`
 	ApiID                string `config:"api_id"`
 	ApiHash              string `config:"api_hash"`
-	Phone                string `config:"phone"`
 	DeviceModel          string `config:"device_model"`
 	SystemVersion        string `config:"system_version"`
 	AppVersion           string `config:"app_version"`
@@ -137,6 +285,11 @@ type Options struct {
 	RestrictSavingBypass bool   `config:"restrict_saving_bypass"`
 	CacheDir             string `config:"cache_dir"`
 	Session              string `config:"session"`
+}
+
+// isBotToken returns true if the login value looks like a bot token (contains ':').
+func isBotToken(login string) bool {
+	return strings.Contains(login, ":")
 }
 
 // Fs represents a Telegram remote.
@@ -162,11 +315,18 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		return nil, fmt.Errorf("telegram: invalid api_id: %w", err)
 	}
 
+	var botToken, phone string
+	if isBotToken(opt.Login) {
+		botToken = opt.Login
+	} else {
+		phone = opt.Login
+	}
+
 	client := api.NewClient(api.ClientOptions{
 		AppID:         apiID,
 		AppHash:       opt.ApiHash,
-		BotToken:      opt.BotToken,
-		Phone:         opt.Phone,
+		BotToken:      botToken,
+		Phone:         phone,
 		DeviceModel:   opt.DeviceModel,
 		SystemVersion: opt.SystemVersion,
 		AppVersion:    opt.AppVersion,
