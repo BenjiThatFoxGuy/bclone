@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -767,125 +766,6 @@ func (c *Client) SendDocument(ctx context.Context, chatID int64, fileName string
 	})
 	if err != nil {
 		return nil, fmt.Errorf("send document to %d: %w", chatID, err)
-	}
-
-	return c.extractSentFile(result, chatID)
-}
-
-// SendPhoto uploads and sends a file as a high-res photo to a chat.
-func (c *Client) SendPhoto(ctx context.Context, chatID int64, fileName string, r io.Reader, silent bool) (*CachedFile, error) {
-	peer, err := c.resolvePeer(ctx, chatID)
-	if err != nil {
-		return nil, err
-	}
-
-	stopAction := c.keepChatAction(ctx, peer, &tg.SendMessageUploadPhotoAction{})
-	defer stopAction()
-
-	f, err := c.uploader.FromReader(ctx, fileName, r)
-	if err != nil {
-		return nil, fmt.Errorf("upload photo %q: %w", fileName, err)
-	}
-
-	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
-		Peer:     peer,
-		Silent:   silent,
-		RandomID: randomID(),
-		Media: &tg.InputMediaUploadedPhoto{
-			File: f,
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("send photo to %d: %w", chatID, err)
-	}
-
-	return c.extractSentFile(result, chatID)
-}
-
-// SendGIF uploads and sends a GIF as a native Telegram animation.
-func (c *Client) SendGIF(ctx context.Context, chatID int64, fileName string, r io.Reader, silent bool) (*CachedFile, error) {
-	peer, err := c.resolvePeer(ctx, chatID)
-	if err != nil {
-		return nil, err
-	}
-
-	stopAction := c.keepChatAction(ctx, peer, &tg.SendMessageUploadDocumentAction{})
-	defer stopAction()
-
-	// Peek at the GIF header to extract dimensions (bytes 6-9).
-	var header [10]byte
-	n, err := io.ReadFull(r, header[:])
-	if err != nil && err != io.ErrUnexpectedEOF {
-		return nil, fmt.Errorf("read gif header %q: %w", fileName, err)
-	}
-	var w, h int
-	if n >= 10 && (string(header[:3]) == "GIF") {
-		w = int(header[6]) | int(header[7])<<8
-		h = int(header[8]) | int(header[9])<<8
-	}
-	// Stitch the header back onto the reader.
-	combined := io.MultiReader(bytes.NewReader(header[:n]), r)
-
-	f, err := c.uploader.FromReader(ctx, fileName, combined)
-	if err != nil {
-		return nil, fmt.Errorf("upload gif %q: %w", fileName, err)
-	}
-
-	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
-		Peer:     peer,
-		Silent:   silent,
-		RandomID: randomID(),
-		Media: &tg.InputMediaUploadedDocument{
-			NosoundVideo: true,
-			File:         f,
-			MimeType:     "image/gif",
-			Attributes: []tg.DocumentAttributeClass{
-				&tg.DocumentAttributeAnimated{},
-				&tg.DocumentAttributeVideo{
-					SupportsStreaming: true,
-					W:                w,
-					H:                h,
-				},
-			},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("send gif to %d: %w", chatID, err)
-	}
-
-	return c.extractSentFile(result, chatID)
-}
-
-// SendVideo uploads and sends a file as a native Telegram video.
-func (c *Client) SendVideo(ctx context.Context, chatID int64, fileName string, size int64, r io.Reader, silent bool) (*CachedFile, error) {
-	peer, err := c.resolvePeer(ctx, chatID)
-	if err != nil {
-		return nil, err
-	}
-
-	stopAction := c.keepChatAction(ctx, peer, &tg.SendMessageUploadVideoAction{})
-	defer stopAction()
-
-	f, err := c.uploader.FromReader(ctx, fileName, r)
-	if err != nil {
-		return nil, fmt.Errorf("upload video %q: %w", fileName, err)
-	}
-
-	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
-		Peer:     peer,
-		Silent:   silent,
-		RandomID: randomID(),
-		Media: &tg.InputMediaUploadedDocument{
-			File:     f,
-			MimeType: DetectMime(fileName),
-			Attributes: []tg.DocumentAttributeClass{
-				&tg.DocumentAttributeVideo{},
-				&tg.DocumentAttributeFilename{FileName: fileName},
-			},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("send video to %d: %w", chatID, err)
 	}
 
 	return c.extractSentFile(result, chatID)

@@ -84,9 +84,10 @@ func init() {
 			}},
 		}, {
 			Name:     "send_native",
-			Help:     "Send files in their native Telegram format when possible.\nImages as photos, GIFs as animations, videos as video messages.\nWhen false, everything is sent as a document (preserves original filename and quality).",
+			Help:     "Legacy: send files in their native Telegram format when possible.\nCurrently non-functional; all files are sent as documents.",
 			Default:  false,
 			Advanced: true,
+			Hide:     fs.OptionHideBoth,
 		}, {
 			Name:     "silent",
 			Help:     "Send files silently (no notification for the recipient).\nUseful for bulk uploads to avoid spamming notifications.",
@@ -548,39 +549,7 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		return nil, err
 	}
 
-	var cf *api.CachedFile
-	var err error
-
-	// When send_native is on, use the native Telegram type for known media.
-	// Photos over 10 MB fall back to document (Telegram's limit).
-	const maxPhotoSize = 10 * 1024 * 1024
-	nt := nativeType(fileName)
-	fs.Debugf(f, "Put: fileName=%q sendNative=%v nativeType=%q size=%d", fileName, f.opt.SendNative, nt, size)
-	if f.opt.SendNative {
-		switch nt {
-		case "photo":
-			if size > 0 && size <= maxPhotoSize {
-				cf, err = f.client.SendPhoto(ctx, chatID, fileName, in, f.opt.Silent)
-				if err != nil && strings.Contains(err.Error(), "PHOTO") {
-					// Photo mode rejected (PHOTO_SAVE_INVALID, PHOTO_EXT_INVALID, etc).
-					// Fall back to document - but we already consumed the reader,
-					// so we have to report the error. Log the fallback note.
-					fs.Debugf(f, "photo send failed (%v), file already consumed - reporting error", err)
-				}
-			} else {
-				// Too large or unknown size - send as document to be safe.
-				cf, err = f.client.SendDocument(ctx, chatID, fileName, size, in, f.opt.Silent)
-			}
-		case "gif":
-			cf, err = f.client.SendGIF(ctx, chatID, fileName, in, f.opt.Silent)
-		case "video":
-			cf, err = f.client.SendVideo(ctx, chatID, fileName, size, in, f.opt.Silent)
-		default:
-			cf, err = f.client.SendDocument(ctx, chatID, fileName, size, in, f.opt.Silent)
-		}
-	} else {
-		cf, err = f.client.SendDocument(ctx, chatID, fileName, size, in, f.opt.Silent)
-	}
+	cf, err := f.client.SendDocument(ctx, chatID, fileName, size, in, f.opt.Silent)
 	if err != nil {
 		return nil, err
 	}
@@ -880,28 +849,6 @@ func (f *Fs) newObject(remote string, cf *api.CachedFile) *Object {
 	}
 }
 
-// nativeType returns the Telegram-native media type for a file based on its
-// extension, or "" if it should be sent as a plain document.
-func nativeType(name string) string {
-	lower := strings.ToLower(name)
-	switch {
-	case strings.HasSuffix(lower, ".jpg"),
-		strings.HasSuffix(lower, ".jpeg"),
-		strings.HasSuffix(lower, ".png"),
-		strings.HasSuffix(lower, ".webp"):
-		return "photo"
-	case strings.HasSuffix(lower, ".gif"):
-		return "gif"
-	case strings.HasSuffix(lower, ".mp4"),
-		strings.HasSuffix(lower, ".mov"),
-		strings.HasSuffix(lower, ".mkv"),
-		strings.HasSuffix(lower, ".avi"),
-		strings.HasSuffix(lower, ".webm"):
-		return "video"
-	default:
-		return ""
-	}
-}
 
 // isMessageGoneError checks if an error means the message was already deleted.
 func isMessageGoneError(err error) bool {
