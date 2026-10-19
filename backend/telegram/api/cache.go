@@ -147,15 +147,15 @@ func (c *Cache) Save() {
 	if err := os.MkdirAll(c.dir, 0o755); err != nil {
 		return
 	}
+	// Marshal while holding the lock to avoid concurrent map access.
 	c.mu.Lock()
-	cached := diskCacheFile{
+	data, err := json.Marshal(diskCacheFile{
 		Chats:    c.chats,
 		ChatInfo: c.chatInfo,
 		SavedAt:  time.Now(),
-	}
+	})
 	c.mu.Unlock()
 
-	data, err := json.Marshal(cached)
 	if err != nil {
 		return
 	}
@@ -181,8 +181,8 @@ func (c *Cache) LookupFile(chatID int64, fileName string) *CachedFile {
 	return cc.Files[fileName]
 }
 
-// ListFiles returns all cached files for a chat. The caller must not
-// modify the returned map.
+// ListFiles returns a snapshot of all cached files for a chat.
+// The returned map is a copy, safe for concurrent iteration.
 func (c *Cache) ListFiles(chatID int64) map[string]*CachedFile {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -190,7 +190,12 @@ func (c *Cache) ListFiles(chatID int64) map[string]*CachedFile {
 	if cc == nil {
 		return nil
 	}
-	return cc.Files
+	// Return a copy to avoid concurrent map read/write panics.
+	out := make(map[string]*CachedFile, len(cc.Files))
+	for k, v := range cc.Files {
+		out[k] = v
+	}
+	return out
 }
 
 // LastMessageID returns the highest scanned message ID for a chat.

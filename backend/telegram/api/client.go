@@ -51,6 +51,11 @@ type Client struct {
 	selfID    int64
 	isBot     bool
 
+	// Peer access hash cache: maps chatID → accessHash.
+	// Populated from dialogs on connect for channels/users.
+	peerHashes   map[int64]int64
+	peerHashesMu sync.RWMutex
+
 	// Concurrency guard for Connect().
 	connectOnce sync.Once
 	connectErr  error
@@ -148,6 +153,7 @@ func NewClient(opts ClientOptions) *Client {
 		appVersion:     opts.AppVersion,
 		sessionStorage: NewConfigSessionStorage(opts.SessionData),
 		isBot:          opts.BotToken != "",
+		peerHashes:     make(map[int64]int64),
 	}
 	return c
 }
@@ -213,6 +219,12 @@ func (c *Client) doConnect(ctx context.Context) error {
 				return fmt.Errorf("fetch self: %w", err)
 			}
 			fs.Debugf("telegram", "Connected (premium=%v)", c.isPremium)
+
+			// Populate peer cache from dialogs so we have access hashes.
+			if err := c.fetchPeerHashes(ctx); err != nil {
+				fs.Debugf("telegram", "Warning: failed to fetch peer hashes: %v", err)
+				// Non-fatal: some operations may still work without cached hashes.
+			}
 
 			// Initialize helpers.
 			c.uploader = uploader.NewUploader(c.api)
@@ -458,6 +470,72 @@ func (c *Client) SelfID() int64 {
 	return c.selfID
 }
 
+// fetchPeerHashes loads the user's dialog list and caches the access
+// hashes for all channels, supergroups, and users. This is needed
+// because InputPeerChannel and InputPeerUser require an access hash.
+func (c *Client) fetchPeerHashes(ctx context.Context) error {
+	if c.isBot {
+		// Bots get peer info from updates, not dialogs.
+		return nil
+	}
+
+	fs.Debugf("telegram", "Fetching dialog peer hashes")
+
+	result, err := c.api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+		OffsetPeer: &tg.InputPeerEmpty{},
+		Limit:      500, // should cover most users
+	})
+	if err != nil {
+		return fmt.Errorf("get dialogs: %w", err)
+	}
+
+	c.peerHashesMu.Lock()
+	defer c.peerHashesMu.Unlock()
+
+	var count int
+	switch d := result.(type) {
+	case *tg.MessagesDialogs:
+		count = c.extractPeerHashes(d.GetChats(), d.GetUsers())
+	case *tg.MessagesDialogsSlice:
+		count = c.extractPeerHashes(d.GetChats(), d.GetUsers())
+	}
+
+	fs.Debugf("telegram", "Cached %d peer access hashes", count)
+	return nil
+}
+
+// extractPeerHashes pulls access hashes from chat and user lists.
+func (c *Client) extractPeerHashes(chats []tg.ChatClass, users []tg.UserClass) int {
+	count := 0
+	for _, chat := range chats {
+		switch ch := chat.(type) {
+		case *tg.Channel:
+			if ah, ok := ch.GetAccessHash(); ok {
+				// Store with the full negative ID convention: -100<channelID>
+				fullID := -ch.GetID() - 1000000000000
+				c.peerHashes[fullID] = ah
+				count++
+			}
+		}
+	}
+	for _, user := range users {
+		if u, ok := user.(*tg.User); ok {
+			if ah, ok := u.GetAccessHash(); ok {
+				c.peerHashes[u.GetID()] = ah
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// getPeerHash returns the cached access hash for a chat ID, or 0 if unknown.
+func (c *Client) getPeerHash(chatID int64) int64 {
+	c.peerHashesMu.RLock()
+	defer c.peerHashesMu.RUnlock()
+	return c.peerHashes[chatID]
+}
+
 // GetChatInfo fetches metadata about a chat by its numeric ID.
 func (c *Client) GetChatInfo(ctx context.Context, chatID int64) (*ChatInfo, error) {
 	info := &ChatInfo{ID: chatID}
@@ -470,7 +548,7 @@ func (c *Client) GetChatInfo(ctx context.Context, chatID int64) (*ChatInfo, erro
 	case chatID > 0:
 		// User / DM
 		info.Type = ChatTypeUser
-		inputUser := &tg.InputUser{UserID: chatID}
+		inputUser := &tg.InputUser{UserID: chatID, AccessHash: c.getPeerHash(chatID)}
 		users, err := c.api.UsersGetUsers(ctx, []tg.InputUserClass{inputUser})
 		if err != nil {
 			return nil, fmt.Errorf("get user %d: %w", chatID, err)
@@ -493,7 +571,7 @@ func (c *Client) GetChatInfo(ctx context.Context, chatID int64) (*ChatInfo, erro
 		// Channel or supergroup
 		realID := toChannelID(chatID)
 		info.Type = ChatTypeChannel
-		inputChannel := &tg.InputChannel{ChannelID: realID}
+		inputChannel := &tg.InputChannel{ChannelID: realID, AccessHash: c.getPeerHash(chatID)}
 		result, err := c.api.ChannelsGetChannels(ctx, []tg.InputChannelClass{inputChannel})
 		if err != nil {
 			return nil, fmt.Errorf("get channel %d: %w", chatID, err)
@@ -662,8 +740,9 @@ func (c *Client) SendDocument(ctx context.Context, chatID int64, fileName string
 	}
 	fs.Debugf("telegram", "SendDocument: peer resolved, sending upload action")
 
-	// Send upload action.
-	_ = c.sendChatAction(ctx, peer, &tg.SendMessageUploadDocumentAction{})
+	// Keep upload action indicator alive until we're done.
+	stopAction := c.keepChatAction(ctx, peer, &tg.SendMessageUploadDocumentAction{})
+	defer stopAction()
 
 	// Upload the file.
 	fs.Debugf("telegram", "SendDocument: uploading file")
@@ -698,7 +777,8 @@ func (c *Client) SendPhoto(ctx context.Context, chatID int64, fileName string, r
 		return nil, err
 	}
 
-	_ = c.sendChatAction(ctx, peer, &tg.SendMessageUploadPhotoAction{})
+	stopAction := c.keepChatAction(ctx, peer, &tg.SendMessageUploadPhotoAction{})
+	defer stopAction()
 
 	f, err := c.uploader.FromReader(ctx, fileName, r)
 	if err != nil {
@@ -798,23 +878,46 @@ func (c *Client) sendChatAction(ctx context.Context, peer tg.InputPeerClass, act
 	return err
 }
 
+// keepChatAction sends the action immediately and then every 4 seconds
+// until the returned cancel function is called. Telegram expires actions
+// after ~5s, so this keeps the indicator visible during long uploads.
+func (c *Client) keepChatAction(ctx context.Context, peer tg.InputPeerClass, action tg.SendMessageActionClass) context.CancelFunc {
+	_ = c.sendChatAction(ctx, peer, action)
+	actionCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-actionCtx.Done():
+				return
+			case <-ticker.C:
+				_ = c.sendChatAction(ctx, peer, action)
+			}
+		}
+	}()
+	return cancel
+}
+
 // resolvePeer converts a numeric chat ID to an InputPeerClass.
 func (c *Client) resolvePeer(ctx context.Context, chatID int64) (tg.InputPeerClass, error) {
 	switch {
 	case chatID > 0:
 		// For the authenticated user's own ID, use InputPeerSelf (saved messages).
-		// InputPeerUser requires an access hash we don't have for arbitrary users.
 		if chatID == c.selfID {
 			fs.Debugf("telegram", "resolvePeer: chatID=%d is self, using InputPeerSelf", chatID)
 			return &tg.InputPeerSelf{}, nil
 		}
-		fs.Debugf("telegram", "resolvePeer: chatID=%d -> InputPeerUser", chatID)
-		return &tg.InputPeerUser{UserID: chatID}, nil
+		hash := c.getPeerHash(chatID)
+		fs.Debugf("telegram", "resolvePeer: chatID=%d -> InputPeerUser (hash=%d)", chatID, hash)
+		return &tg.InputPeerUser{UserID: chatID, AccessHash: hash}, nil
 	case isChannelID(chatID):
 		realID := toChannelID(chatID)
-		fs.Debugf("telegram", "resolvePeer: chatID=%d -> InputPeerChannel (realID=%d)", chatID, realID)
-		return &tg.InputPeerChannel{ChannelID: realID}, nil
+		hash := c.getPeerHash(chatID) // stored under the full negative ID
+		fs.Debugf("telegram", "resolvePeer: chatID=%d -> InputPeerChannel (realID=%d, hash=%d)", chatID, realID, hash)
+		return &tg.InputPeerChannel{ChannelID: realID, AccessHash: hash}, nil
 	default:
+		// Basic groups don't need access hashes.
 		fs.Debugf("telegram", "resolvePeer: chatID=%d -> InputPeerChat (chatID=%d)", chatID, -chatID)
 		return &tg.InputPeerChat{ChatID: -chatID}, nil
 	}
