@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -383,27 +384,11 @@ func (c *Client) SignIn(ctx context.Context, code, codeHash string) (needs2FA bo
 	return false, nil
 }
 
-// CheckPassword verifies the 2FA password.
+// CheckPassword verifies the 2FA password using gotd's auth client,
+// which handles SRP parameter fetching and hash computation internally.
 func (c *Client) CheckPassword(ctx context.Context, password string) error {
-	// Get the SRP parameters from the server.
-	ap, err := c.api.AccountGetPassword(ctx)
-	if err != nil {
-		return fmt.Errorf("get password params: %w", err)
-	}
-
-	// Use gotd's auth helper to compute the SRP check.
-	inputCheck, err := auth.PasswordHash(
-		[]byte(password),
-		ap.SRPID,
-		ap.SRPB,
-		ap.SecureRandom,
-		ap.CurrentAlgo,
-	)
-	if err != nil {
-		return fmt.Errorf("compute password hash: %w", err)
-	}
-
-	_, err = c.api.AuthCheckPassword(ctx, inputCheck)
+	authClient := auth.NewClient(c.api, rand.Reader, c.appID, c.appHash)
+	_, err := authClient.Password(ctx, password)
 	if err != nil {
 		return fmt.Errorf("check password: %w", err)
 	}

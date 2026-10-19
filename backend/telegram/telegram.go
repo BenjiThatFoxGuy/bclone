@@ -83,9 +83,10 @@ func init() {
 				Help:  "Documents, photos, and videos.",
 			}},
 		}, {
-			Name:    "send_as_photo",
-			Help:    "Send image files as photos instead of documents.\nUses Telegram's photo mode. Other files are always sent as documents.",
-			Default: false,
+			Name:     "send_as_photo",
+			Help:     "Send image files as photos instead of documents.\nUses Telegram's photo mode. Other files are always sent as documents.",
+			Default:  false,
+			Advanced: true,
 		}, {
 			Name:     "restrict_saving_bypass",
 			Help:     "Allow access to files in chats with content protection (restrict saving).\nOnly effective when you are not an admin - admins always have access.\nServer-side copy is never available for protected chats; rclone will reupload.",
@@ -149,21 +150,19 @@ func configHandler(ctx context.Context, name string, m configmap.Mapper, conf fs
 		deviceModel, _ := m.Get("device_model")
 		systemVersion, _ := m.Get("system_version")
 		appVersion, _ := m.Get("app_version")
-		sessionData, _ := m.Get("session")
-
-		client := api.NewClient(api.ClientOptions{
-			AppID:         apiID,
-			AppHash:       apiHash,
-			BotToken:      botToken,
-			Phone:         phone,
-			DeviceModel:   deviceModel,
-			SystemVersion: systemVersion,
-			AppVersion:    appVersion,
-			SessionData:   sessionData,
-		})
 
 		if botToken != "" {
-			// Bot mode: connect and auth in one shot.
+			// Bot mode: reuse existing session if present.
+			sessionData, _ := m.Get("session")
+			client := api.NewClient(api.ClientOptions{
+				AppID:         apiID,
+				AppHash:       apiHash,
+				BotToken:      botToken,
+				DeviceModel:   deviceModel,
+				SystemVersion: systemVersion,
+				AppVersion:    appVersion,
+				SessionData:   sessionData,
+			})
 			if err := client.ConnectAndAuthBot(ctx); err != nil {
 				return nil, fmt.Errorf("bot auth failed: %w", err)
 			}
@@ -171,7 +170,18 @@ func configHandler(ctx context.Context, name string, m configmap.Mapper, conf fs
 			return fs.ConfigGoto("auth_done")
 		}
 
-		// User mode: connect and send the auth code.
+		// User mode: always start fresh to avoid AUTH_RESTART from
+		// a half-completed previous attempt.
+		m.Set("session", "")
+		client := api.NewClient(api.ClientOptions{
+			AppID:         apiID,
+			AppHash:       apiHash,
+			Phone:         phone,
+			DeviceModel:   deviceModel,
+			SystemVersion: systemVersion,
+			AppVersion:    appVersion,
+		})
+
 		codeHash, err := client.ConnectAndSendCode(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to send auth code: %w", err)
