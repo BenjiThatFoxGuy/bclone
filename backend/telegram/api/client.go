@@ -19,6 +19,7 @@ import (
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
+	"github.com/rclone/rclone/fs"
 )
 
 // Client wraps gotd/td into a high-level interface for the Telegram
@@ -160,6 +161,7 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 func (c *Client) doConnect(ctx context.Context) error {
+	fs.Debugf("telegram", "Connecting to Telegram (bot=%v)", c.isBot)
 	c.client = telegram.NewClient(c.appID, c.appHash, telegram.Options{
 		SessionStorage: c.sessionStorage,
 		Device: telegram.DeviceConfig{
@@ -183,13 +185,16 @@ func (c *Client) doConnect(ctx context.Context) error {
 
 			// Authenticate.
 			if c.isBot {
+				fs.Debugf("telegram", "Authenticating as bot")
 				if _, err := c.client.Auth().Bot(ctx, c.botToken); err != nil {
 					// Might already be authorized from session.
 					if !isAlreadyAuthorized(err) {
 						return fmt.Errorf("bot auth: %w", err)
 					}
+					fs.Debugf("telegram", "Bot already authorized from session")
 				}
 			} else if c.phone != "" {
+				fs.Debugf("telegram", "Checking user session auth status")
 				// For user auth, try to use existing session first.
 				status, err := c.client.Auth().Status(ctx)
 				if err != nil {
@@ -198,12 +203,15 @@ func (c *Client) doConnect(ctx context.Context) error {
 				if !status.Authorized {
 					return fmt.Errorf("user session not authorized - run rclone config to complete login")
 				}
+				fs.Debugf("telegram", "User session authorized")
 			}
 
 			// Fetch self info for premium detection.
+			fs.Debugf("telegram", "Fetching account info")
 			if err := c.fetchSelfInfo(ctx); err != nil {
 				return fmt.Errorf("fetch self: %w", err)
 			}
+			fs.Debugf("telegram", "Connected (premium=%v)", c.isPremium)
 
 			// Initialize helpers.
 			c.uploader = uploader.NewUploader(c.api)
@@ -630,19 +638,23 @@ func (c *Client) DownloadFile(ctx context.Context, cf *CachedFile) (io.ReadClose
 
 // SendDocument uploads and sends a file as a document to a chat.
 func (c *Client) SendDocument(ctx context.Context, chatID int64, fileName string, size int64, r io.Reader) (*CachedFile, error) {
+	fs.Debugf("telegram", "SendDocument: chatID=%d fileName=%q size=%d", chatID, fileName, size)
 	peer, err := c.resolvePeer(ctx, chatID)
 	if err != nil {
 		return nil, err
 	}
+	fs.Debugf("telegram", "SendDocument: peer resolved, sending upload action")
 
 	// Send upload action.
 	_ = c.sendChatAction(ctx, peer, &tg.SendMessageUploadDocumentAction{})
 
 	// Upload the file.
+	fs.Debugf("telegram", "SendDocument: uploading file")
 	f, err := c.uploader.FromReader(ctx, fileName, r)
 	if err != nil {
 		return nil, fmt.Errorf("upload %q: %w", fileName, err)
 	}
+	fs.Debugf("telegram", "SendDocument: upload complete, sending message")
 
 	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
 		Peer: peer,

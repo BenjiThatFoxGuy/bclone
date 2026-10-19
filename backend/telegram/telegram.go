@@ -318,6 +318,7 @@ type Fs struct {
 
 // NewFs constructs a new Fs from the path, container:path.
 func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
+	fs.Debugf(nil, "telegram: NewFs name=%q root=%q", name, root)
 	opt := new(Options)
 	if err := configstruct.Set(m, opt); err != nil {
 		return nil, err
@@ -471,31 +472,40 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 
 // NewObject finds an object by name.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	chatID, fileName := f.parsePath(f.fullPath(remote))
+	fullPath := f.fullPath(remote)
+	chatID, fileName := f.parsePath(fullPath)
+	fs.Debugf(f, "NewObject: remote=%q fullPath=%q chatID=%d fileName=%q", remote, fullPath, chatID, fileName)
 	if chatID == 0 || fileName == "" {
+		fs.Debugf(f, "NewObject: not found (invalid path)")
 		return nil, fs.ErrorObjectNotFound
 	}
 
 	if err := f.ensureChat(ctx, chatID); err != nil {
+		fs.Debugf(f, "NewObject: ensureChat failed: %v", err)
 		return nil, err
 	}
 
 	cf := f.cache.LookupFile(chatID, fileName)
 	if cf == nil {
+		fs.Debugf(f, "NewObject: not found in cache")
 		return nil, fs.ErrorObjectNotFound
 	}
+	fs.Debugf(f, "NewObject: found in cache msgID=%d", cf.MessageID)
 	return f.newObject(remote, cf), nil
 }
 
 // Put uploads a file to Telegram.
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
 	remote := src.Remote()
-	chatID, fileName := f.parsePath(f.fullPath(remote))
+	fullPath := f.fullPath(remote)
+	fs.Debugf(f, "Put: remote=%q fullPath=%q", remote, fullPath)
+	chatID, fileName := f.parsePath(fullPath)
 	if chatID == 0 || fileName == "" {
 		return nil, fmt.Errorf("telegram: invalid path %q - must be chats/<id>/<filename>", remote)
 	}
 
 	size := src.Size()
+	fs.Debugf(f, "Put: chatID=%d fileName=%q size=%d", chatID, fileName, size)
 	maxSize := f.client.MaxFileSize()
 	if size > maxSize {
 		limit := "2 GB"
@@ -720,8 +730,10 @@ func (f *Fs) getChatInfo(ctx context.Context, chatID int64) *api.ChatInfo {
 
 // checkWriteAccess verifies we can write to a chat, respecting restrict-saving rules.
 func (f *Fs) checkWriteAccess(ctx context.Context, chatID int64) error {
+	fs.Debugf(f, "checkWriteAccess: chatID=%d", chatID)
 	info := f.getChatInfo(ctx, chatID)
 	if info == nil {
+		fs.Debugf(f, "checkWriteAccess: no chat info, allowing")
 		return nil // can't determine, allow
 	}
 	if !info.RestrictSaving {
