@@ -212,7 +212,10 @@ func configHandler(ctx context.Context, name string, m configmap.Mapper, conf fs
 		m.Set("session", client.SessionData())
 
 		if needsPassword {
-			return fs.ConfigPassword("user_2fa", "config_2fa_password",
+			// Use ConfigInput not ConfigPassword here: ConfigPassword
+			// runs rclone's obscure on the result, but we need the raw
+			// password for Telegram's SRP auth.
+			return fs.ConfigInput("user_2fa", "config_2fa_password",
 				"Two-factor authentication password required.")
 		}
 		return fs.ConfigGoto("auth_done")
