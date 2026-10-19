@@ -245,7 +245,7 @@ func generateResourceWindows(version, arch string) func() {
 func compileArch(version, goos, goarch, dir string) bool {
 	log.Printf("Compiling %s/%s into %s", goos, goarch, dir)
 	goarchBase := stripVersion(goarch)
-	output := filepath.Join(dir, "rclone")
+	output := filepath.Join(dir, "bclone")
 	if goos == "windows" {
 		output += ".exe"
 		if cleanupFn := generateResourceWindows(version, goarchBase); cleanupFn != nil {
@@ -374,7 +374,7 @@ func compile(version string) {
 		if goos == "darwin" {
 			userGoos = "osx"
 		}
-		dir := filepath.Join("rclone-" + version + "-" + userGoos + "-" + goarch)
+		dir := filepath.Join("bclone-" + version + "-" + userGoos + "-" + goarch)
 		run <- func() {
 			if !compileArch(version, goos, goarch, dir) {
 				failuresMu.Lock()
@@ -406,7 +406,7 @@ func main() {
 		run("mkdir", "build")
 	}
 	chdir("build")
-	err := os.WriteFile("version.txt", []byte(fmt.Sprintf("rclone %s\n", version)), 0666)
+	err := os.WriteFile("version.txt", []byte(fmt.Sprintf("bclone %s\n", version)), 0666)
 	if err != nil {
 		log.Fatalf("Couldn't write version.txt: %v", err)
 	}
