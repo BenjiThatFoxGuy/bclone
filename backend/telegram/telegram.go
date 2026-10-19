@@ -83,8 +83,8 @@ func init() {
 				Help:  "Documents, photos, and videos.",
 			}},
 		}, {
-			Name:     "send_as_photo",
-			Help:     "Send image files as photos instead of documents.\nUses Telegram's photo mode. Other files are always sent as documents.",
+			Name:     "send_native",
+			Help:     "Send files in their native Telegram format when possible.\nImages as photos, GIFs as animations, videos as video messages.\nWhen false, everything is sent as a document (preserves original filename and quality).",
 			Default:  false,
 			Advanced: true,
 		}, {
@@ -299,7 +299,7 @@ type Options struct {
 	SystemVersion        string `config:"system_version"`
 	AppVersion           string `config:"app_version"`
 	MediaMode            string `config:"media_mode"`
-	SendAsPhoto          bool   `config:"send_as_photo"`
+	SendNative           bool   `config:"send_native"`
 	Silent               bool   `config:"silent"`
 	RestrictSavingBypass bool   `config:"restrict_saving_bypass"`
 	CacheDir             string `config:"cache_dir"`
@@ -551,9 +551,18 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	var cf *api.CachedFile
 	var err error
 
-	// Send as photo if configured and the file is an image.
-	if f.opt.SendAsPhoto && isImageFile(fileName) {
-		cf, err = f.client.SendPhoto(ctx, chatID, fileName, in, f.opt.Silent)
+	// When send_native is on, use the native Telegram type for known media.
+	if f.opt.SendNative {
+		switch nativeType(fileName) {
+		case "photo":
+			cf, err = f.client.SendPhoto(ctx, chatID, fileName, in, f.opt.Silent)
+		case "gif":
+			cf, err = f.client.SendGIF(ctx, chatID, fileName, in, f.opt.Silent)
+		case "video":
+			cf, err = f.client.SendVideo(ctx, chatID, fileName, size, in, f.opt.Silent)
+		default:
+			cf, err = f.client.SendDocument(ctx, chatID, fileName, size, in, f.opt.Silent)
+		}
 	} else {
 		cf, err = f.client.SendDocument(ctx, chatID, fileName, size, in, f.opt.Silent)
 	}
@@ -856,13 +865,27 @@ func (f *Fs) newObject(remote string, cf *api.CachedFile) *Object {
 	}
 }
 
-// isImageFile checks if a filename looks like an image.
-func isImageFile(name string) bool {
+// nativeType returns the Telegram-native media type for a file based on its
+// extension, or "" if it should be sent as a plain document.
+func nativeType(name string) string {
 	lower := strings.ToLower(name)
-	return strings.HasSuffix(lower, ".jpg") ||
-		strings.HasSuffix(lower, ".jpeg") ||
-		strings.HasSuffix(lower, ".png") ||
-		strings.HasSuffix(lower, ".webp")
+	switch {
+	case strings.HasSuffix(lower, ".jpg"),
+		strings.HasSuffix(lower, ".jpeg"),
+		strings.HasSuffix(lower, ".png"),
+		strings.HasSuffix(lower, ".webp"):
+		return "photo"
+	case strings.HasSuffix(lower, ".gif"):
+		return "gif"
+	case strings.HasSuffix(lower, ".mp4"),
+		strings.HasSuffix(lower, ".mov"),
+		strings.HasSuffix(lower, ".mkv"),
+		strings.HasSuffix(lower, ".avi"),
+		strings.HasSuffix(lower, ".webm"):
+		return "video"
+	default:
+		return ""
+	}
 }
 
 // isMessageGoneError checks if an error means the message was already deleted.

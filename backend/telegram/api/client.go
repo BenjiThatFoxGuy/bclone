@@ -801,6 +801,76 @@ func (c *Client) SendPhoto(ctx context.Context, chatID int64, fileName string, r
 	return c.extractSentFile(result, chatID)
 }
 
+// SendGIF uploads and sends a GIF as a native Telegram animation.
+func (c *Client) SendGIF(ctx context.Context, chatID int64, fileName string, r io.Reader, silent bool) (*CachedFile, error) {
+	peer, err := c.resolvePeer(ctx, chatID)
+	if err != nil {
+		return nil, err
+	}
+
+	stopAction := c.keepChatAction(ctx, peer, &tg.SendMessageUploadDocumentAction{})
+	defer stopAction()
+
+	f, err := c.uploader.FromReader(ctx, fileName, r)
+	if err != nil {
+		return nil, fmt.Errorf("upload gif %q: %w", fileName, err)
+	}
+
+	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
+		Peer:     peer,
+		Silent:   silent,
+		RandomID: randomID(),
+		Media: &tg.InputMediaUploadedDocument{
+			File:     f,
+			MimeType: "image/gif",
+			Attributes: []tg.DocumentAttributeClass{
+				&tg.DocumentAttributeAnimated{},
+				&tg.DocumentAttributeFilename{FileName: fileName},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("send gif to %d: %w", chatID, err)
+	}
+
+	return c.extractSentFile(result, chatID)
+}
+
+// SendVideo uploads and sends a file as a native Telegram video.
+func (c *Client) SendVideo(ctx context.Context, chatID int64, fileName string, size int64, r io.Reader, silent bool) (*CachedFile, error) {
+	peer, err := c.resolvePeer(ctx, chatID)
+	if err != nil {
+		return nil, err
+	}
+
+	stopAction := c.keepChatAction(ctx, peer, &tg.SendMessageUploadVideoAction{})
+	defer stopAction()
+
+	f, err := c.uploader.FromReader(ctx, fileName, r)
+	if err != nil {
+		return nil, fmt.Errorf("upload video %q: %w", fileName, err)
+	}
+
+	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
+		Peer:     peer,
+		Silent:   silent,
+		RandomID: randomID(),
+		Media: &tg.InputMediaUploadedDocument{
+			File:     f,
+			MimeType: DetectMime(fileName),
+			Attributes: []tg.DocumentAttributeClass{
+				&tg.DocumentAttributeVideo{},
+				&tg.DocumentAttributeFilename{FileName: fileName},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("send video to %d: %w", chatID, err)
+	}
+
+	return c.extractSentFile(result, chatID)
+}
+
 // SendWithReference sends a file to a chat using an existing file reference
 // (server-side copy - no download/reupload).
 func (c *Client) SendWithReference(ctx context.Context, chatID int64, cf *CachedFile) (*CachedFile, error) {
@@ -1167,6 +1237,12 @@ func DetectMime(name string) string {
 		return "image/webp"
 	case strings.HasSuffix(lower, ".mp4"):
 		return "video/mp4"
+	case strings.HasSuffix(lower, ".mov"):
+		return "video/quicktime"
+	case strings.HasSuffix(lower, ".mkv"):
+		return "video/x-matroska"
+	case strings.HasSuffix(lower, ".avi"):
+		return "video/x-msvideo"
 	case strings.HasSuffix(lower, ".webm"):
 		return "video/webm"
 	case strings.HasSuffix(lower, ".mp3"):
