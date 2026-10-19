@@ -838,6 +838,152 @@ func (c *Client) SendWithReference(ctx context.Context, chatID int64, cf *Cached
 	return c.extractSentFile(result, chatID)
 }
 
+// MediaGroupItem represents a pre-uploaded file ready to be sent as
+// part of a media group (album).
+type MediaGroupItem struct {
+	File     tg.InputFileClass
+	FileName string
+	MimeType string
+	IsPhoto  bool
+}
+
+// UploadFile uploads file data to Telegram's servers without sending a
+// message. Returns the file handle for use in SendMediaGroup or SendDocument.
+func (c *Client) UploadFile(ctx context.Context, fileName string, r io.Reader) (tg.InputFileClass, error) {
+	return c.uploader.FromReader(ctx, fileName, r)
+}
+
+// SendMediaGroup sends multiple files as a grouped album. Telegram supports
+// up to 10 items per group. Returns a CachedFile for each item in order.
+func (c *Client) SendMediaGroup(ctx context.Context, chatID int64, items []MediaGroupItem) ([]*CachedFile, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	if len(items) == 1 {
+		// Single file: use regular send for proper result extraction.
+		item := items[0]
+		if item.IsPhoto {
+			result, err := c.sendUploadedPhoto(ctx, chatID, item.File)
+			if err != nil {
+				return nil, err
+			}
+			return []*CachedFile{result}, nil
+		}
+		result, err := c.sendUploadedDocument(ctx, chatID, item.File, item.FileName, item.MimeType)
+		if err != nil {
+			return nil, err
+		}
+		return []*CachedFile{result}, nil
+	}
+
+	peer, err := c.resolvePeer(ctx, chatID)
+	if err != nil {
+		return nil, err
+	}
+
+	fs.Debugf("telegram", "SendMediaGroup: chatID=%d items=%d", chatID, len(items))
+
+	stopAction := c.keepChatAction(ctx, peer, &tg.SendMessageUploadDocumentAction{})
+	defer stopAction()
+
+	multiMedia := make([]tg.InputSingleMedia, len(items))
+	for i, item := range items {
+		var media tg.InputMediaClass
+		if item.IsPhoto {
+			media = &tg.InputMediaUploadedPhoto{File: item.File}
+		} else {
+			media = &tg.InputMediaUploadedDocument{
+				File:     item.File,
+				MimeType: item.MimeType,
+				Attributes: []tg.DocumentAttributeClass{
+					&tg.DocumentAttributeFilename{FileName: item.FileName},
+				},
+			}
+		}
+		multiMedia[i] = tg.InputSingleMedia{
+			RandomID: randomID(),
+			Media:    media,
+		}
+	}
+
+	result, err := c.api.MessagesSendMultiMedia(ctx, &tg.MessagesSendMultiMediaRequest{
+		Peer:       peer,
+		MultiMedia: multiMedia,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("send media group to %d: %w", chatID, err)
+	}
+
+	return c.extractSentFiles(result, chatID, len(items))
+}
+
+// sendUploadedDocument sends an already-uploaded file as a document message.
+func (c *Client) sendUploadedDocument(ctx context.Context, chatID int64, f tg.InputFileClass, fileName, mimeType string) (*CachedFile, error) {
+	peer, err := c.resolvePeer(ctx, chatID)
+	if err != nil {
+		return nil, err
+	}
+	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
+		Peer:     peer,
+		RandomID: randomID(),
+		Media: &tg.InputMediaUploadedDocument{
+			File:     f,
+			MimeType: mimeType,
+			Attributes: []tg.DocumentAttributeClass{
+				&tg.DocumentAttributeFilename{FileName: fileName},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("send document to %d: %w", chatID, err)
+	}
+	return c.extractSentFile(result, chatID)
+}
+
+// sendUploadedPhoto sends an already-uploaded file as a photo message.
+func (c *Client) sendUploadedPhoto(ctx context.Context, chatID int64, f tg.InputFileClass) (*CachedFile, error) {
+	peer, err := c.resolvePeer(ctx, chatID)
+	if err != nil {
+		return nil, err
+	}
+	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
+		Peer:     peer,
+		RandomID: randomID(),
+		Media:    &tg.InputMediaUploadedPhoto{File: f},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("send photo to %d: %w", chatID, err)
+	}
+	return c.extractSentFile(result, chatID)
+}
+
+// extractSentFiles extracts multiple CachedFiles from a sendMultiMedia result.
+func (c *Client) extractSentFiles(result tg.UpdatesClass, chatID int64, expected int) ([]*CachedFile, error) {
+	updates := extractUpdates(result)
+	var files []*CachedFile
+	for _, u := range updates {
+		var m *tg.Message
+		switch upd := u.(type) {
+		case *tg.UpdateNewMessage:
+			if msg, ok := upd.GetMessage().(*tg.Message); ok {
+				m = msg
+			}
+		case *tg.UpdateNewChannelMessage:
+			if msg, ok := upd.GetMessage().(*tg.Message); ok {
+				m = msg
+			}
+		}
+		if m != nil {
+			extracted := extractFilesFromMessage(m, chatID)
+			files = append(files, extracted...)
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("could not extract file info from multi-media result")
+	}
+	return files, nil
+}
+
 // DeleteMessage deletes a message in a chat.
 func (c *Client) DeleteMessage(ctx context.Context, chatID int64, msgID int) error {
 	if isChannelID(chatID) {
