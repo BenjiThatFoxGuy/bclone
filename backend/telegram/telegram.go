@@ -426,25 +426,39 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 
 	parts := strings.SplitN(fullDir, "/", 3)
 
-	// Must start with "chats"
-	if len(parts) == 0 || parts[0] != "chats" {
-		return nil, fs.ErrorDirNotFound
-	}
+	var chatID int64
 
-	// "chats" alone - we don't list chats per spec.
-	if len(parts) == 1 {
-		return nil, fs.ErrorDirNotFound
-	}
+	if len(parts) > 0 && parts[0] == "saved" {
+		// "saved" or "saved/" - list files in saved messages
+		chatID = f.client.SelfID()
+		if chatID == 0 {
+			return nil, fs.ErrorDirNotFound
+		}
+		// No deeper nesting allowed.
+		if len(parts) > 1 && parts[1] != "" {
+			return nil, fs.ErrorDirNotFound
+		}
+	} else {
+		// Must start with "chats"
+		if len(parts) == 0 || parts[0] != "chats" {
+			return nil, fs.ErrorDirNotFound
+		}
 
-	// "chats/<id>" - list files in chat.
-	chatID := api.ParseChatID(parts[1])
-	if chatID == 0 {
-		return nil, fs.ErrorDirNotFound
-	}
+		// "chats" alone - we don't list chats per spec.
+		if len(parts) == 1 {
+			return nil, fs.ErrorDirNotFound
+		}
 
-	// No deeper nesting allowed.
-	if len(parts) > 2 && parts[2] != "" {
-		return nil, fs.ErrorDirNotFound
+		// "chats/<id>" - list files in chat.
+		chatID = api.ParseChatID(parts[1])
+		if chatID == 0 {
+			return nil, fs.ErrorDirNotFound
+		}
+
+		// No deeper nesting allowed.
+		if len(parts) > 2 && parts[2] != "" {
+			return nil, fs.ErrorDirNotFound
+		}
 	}
 
 	if err := f.ensureChat(ctx, chatID); err != nil {
@@ -665,9 +679,26 @@ func (f *Fs) fullPath(remote string) string {
 	return f.root + "/" + remote
 }
 
-// parsePath extracts chat ID and filename from a full path like "chats/12345/file.txt".
+// parsePath extracts chat ID and filename from a full path like "chats/12345/file.txt"
+// or "saved/file.txt" (alias for the authenticated user's saved messages).
 func (f *Fs) parsePath(p string) (chatID int64, fileName string) {
 	parts := strings.SplitN(p, "/", 3)
+	if len(parts) < 1 {
+		return 0, ""
+	}
+
+	// "saved" is an alias for chats/<selfID>
+	if parts[0] == "saved" {
+		chatID = f.client.SelfID()
+		if chatID == 0 {
+			return 0, "" // not connected yet
+		}
+		if len(parts) >= 2 {
+			fileName = parts[1]
+		}
+		return chatID, fileName
+	}
+
 	if len(parts) < 2 || parts[0] != "chats" {
 		return 0, ""
 	}

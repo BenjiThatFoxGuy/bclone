@@ -452,6 +452,11 @@ func (c *Client) fetchSelfInfo(ctx context.Context) error {
 	return nil
 }
 
+// SelfID returns the authenticated user's Telegram ID.
+func (c *Client) SelfID() int64 {
+	return c.selfID
+}
+
 // GetChatInfo fetches metadata about a chat by its numeric ID.
 func (c *Client) GetChatInfo(ctx context.Context, chatID int64) (*ChatInfo, error) {
 	info := &ChatInfo{ID: chatID}
@@ -782,11 +787,20 @@ func (c *Client) sendChatAction(ctx context.Context, peer tg.InputPeerClass, act
 func (c *Client) resolvePeer(ctx context.Context, chatID int64) (tg.InputPeerClass, error) {
 	switch {
 	case chatID > 0:
+		// For the authenticated user's own ID, use InputPeerSelf (saved messages).
+		// InputPeerUser requires an access hash we don't have for arbitrary users.
+		if chatID == c.selfID {
+			fs.Debugf("telegram", "resolvePeer: chatID=%d is self, using InputPeerSelf", chatID)
+			return &tg.InputPeerSelf{}, nil
+		}
+		fs.Debugf("telegram", "resolvePeer: chatID=%d -> InputPeerUser", chatID)
 		return &tg.InputPeerUser{UserID: chatID}, nil
 	case isChannelID(chatID):
 		realID := toChannelID(chatID)
+		fs.Debugf("telegram", "resolvePeer: chatID=%d -> InputPeerChannel (realID=%d)", chatID, realID)
 		return &tg.InputPeerChannel{ChannelID: realID}, nil
 	default:
+		fs.Debugf("telegram", "resolvePeer: chatID=%d -> InputPeerChat (chatID=%d)", chatID, -chatID)
 		return &tg.InputPeerChat{ChatID: -chatID}, nil
 	}
 }
