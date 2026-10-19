@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -811,7 +812,21 @@ func (c *Client) SendGIF(ctx context.Context, chatID int64, fileName string, r i
 	stopAction := c.keepChatAction(ctx, peer, &tg.SendMessageUploadDocumentAction{})
 	defer stopAction()
 
-	f, err := c.uploader.FromReader(ctx, fileName, r)
+	// Peek at the GIF header to extract dimensions (bytes 6-9).
+	var header [10]byte
+	n, err := io.ReadFull(r, header[:])
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return nil, fmt.Errorf("read gif header %q: %w", fileName, err)
+	}
+	var w, h int
+	if n >= 10 && (string(header[:3]) == "GIF") {
+		w = int(header[6]) | int(header[7])<<8
+		h = int(header[8]) | int(header[9])<<8
+	}
+	// Stitch the header back onto the reader.
+	combined := io.MultiReader(bytes.NewReader(header[:n]), r)
+
+	f, err := c.uploader.FromReader(ctx, fileName, combined)
 	if err != nil {
 		return nil, fmt.Errorf("upload gif %q: %w", fileName, err)
 	}
@@ -826,7 +841,11 @@ func (c *Client) SendGIF(ctx context.Context, chatID int64, fileName string, r i
 			MimeType:     "image/gif",
 			Attributes: []tg.DocumentAttributeClass{
 				&tg.DocumentAttributeAnimated{},
-				&tg.DocumentAttributeFilename{FileName: fileName},
+				&tg.DocumentAttributeVideo{
+					SupportsStreaming: true,
+					W:                w,
+					H:                h,
+				},
 			},
 		},
 	})
