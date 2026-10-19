@@ -552,10 +552,25 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	var err error
 
 	// When send_native is on, use the native Telegram type for known media.
+	// Photos over 10 MB fall back to document (Telegram's limit).
+	const maxPhotoSize = 10 * 1024 * 1024
+	nt := nativeType(fileName)
+	fs.Debugf(f, "Put: fileName=%q sendNative=%v nativeType=%q size=%d", fileName, f.opt.SendNative, nt, size)
 	if f.opt.SendNative {
-		switch nativeType(fileName) {
+		switch nt {
 		case "photo":
-			cf, err = f.client.SendPhoto(ctx, chatID, fileName, in, f.opt.Silent)
+			if size > 0 && size <= maxPhotoSize {
+				cf, err = f.client.SendPhoto(ctx, chatID, fileName, in, f.opt.Silent)
+				if err != nil && strings.Contains(err.Error(), "PHOTO") {
+					// Photo mode rejected (PHOTO_SAVE_INVALID, PHOTO_EXT_INVALID, etc).
+					// Fall back to document - but we already consumed the reader,
+					// so we have to report the error. Log the fallback note.
+					fs.Debugf(f, "photo send failed (%v), file already consumed - reporting error", err)
+				}
+			} else {
+				// Too large or unknown size - send as document to be safe.
+				cf, err = f.client.SendDocument(ctx, chatID, fileName, size, in, f.opt.Silent)
+			}
 		case "gif":
 			cf, err = f.client.SendGIF(ctx, chatID, fileName, in, f.opt.Silent)
 		case "video":
