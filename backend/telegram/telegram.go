@@ -18,7 +18,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rclone/rclone/backend/telegram/api"
@@ -87,6 +86,11 @@ func init() {
 			Name:     "send_as_photo",
 			Help:     "Send image files as photos instead of documents.\nUses Telegram's photo mode. Other files are always sent as documents.",
 			Default:  false,
+			Advanced: true,
+		}, {
+			Name:     "silent",
+			Help:     "Send files silently (no notification for the recipient).\nUseful for bulk uploads to avoid spamming notifications.",
+			Default:  true,
 			Advanced: true,
 		}, {
 			Name:     "restrict_saving_bypass",
@@ -296,6 +300,7 @@ type Options struct {
 	AppVersion           string `config:"app_version"`
 	MediaMode            string `config:"media_mode"`
 	SendAsPhoto          bool   `config:"send_as_photo"`
+	Silent               bool   `config:"silent"`
 	RestrictSavingBypass bool   `config:"restrict_saving_bypass"`
 	CacheDir             string `config:"cache_dir"`
 	Session              string `config:"session"`
@@ -315,137 +320,6 @@ type Fs struct {
 	client   *api.Client
 	cache    *api.Cache
 	m        configmap.Mapper // for persisting session updates
-	batcher  *uploadBatcher   // groups uploads into media albums
-}
-
-// uploadBatcher collects files destined for the same chat and sends
-// them as media groups (albums) of up to 10 items. This reduces spam
-// when uploading many files.
-type uploadBatcher struct {
-	mu      sync.Mutex
-	pending map[int64][]batchItem // chatID -> queued items
-	timers  map[int64]*time.Timer
-	fs      *Fs
-}
-
-type batchItem struct {
-	file     api.MediaGroupItem
-	done     chan batchResult
-}
-
-type batchResult struct {
-	cf  *api.CachedFile
-	err error
-}
-
-const (
-	maxMediaGroupSize = 10              // Telegram's album limit
-	batchFlushDelay   = 3 * time.Second // wait for more files before flushing
-)
-
-func newUploadBatcher(f *Fs) *uploadBatcher {
-	return &uploadBatcher{
-		pending: make(map[int64][]batchItem),
-		timers:  make(map[int64]*time.Timer),
-		fs:      f,
-	}
-}
-
-// add queues a file for batched sending. Blocks until the batch is flushed
-// and returns the CachedFile result.
-func (b *uploadBatcher) add(ctx context.Context, chatID int64, item api.MediaGroupItem) (*api.CachedFile, error) {
-	done := make(chan batchResult, 1)
-	bi := batchItem{file: item, done: done}
-
-	b.mu.Lock()
-	b.pending[chatID] = append(b.pending[chatID], bi)
-	count := len(b.pending[chatID])
-
-	if count >= maxMediaGroupSize {
-		// Batch full, flush immediately.
-		items := b.pending[chatID]
-		delete(b.pending, chatID)
-		if t, ok := b.timers[chatID]; ok {
-			t.Stop()
-			delete(b.timers, chatID)
-		}
-		b.mu.Unlock()
-		b.flush(ctx, chatID, items)
-	} else {
-		// Reset the flush timer.
-		if t, ok := b.timers[chatID]; ok {
-			t.Stop()
-		}
-		b.timers[chatID] = time.AfterFunc(batchFlushDelay, func() {
-			b.mu.Lock()
-			items := b.pending[chatID]
-			delete(b.pending, chatID)
-			delete(b.timers, chatID)
-			b.mu.Unlock()
-			if len(items) > 0 {
-				b.flush(ctx, chatID, items)
-			}
-		})
-		b.mu.Unlock()
-	}
-
-	// Wait for our result.
-	select {
-	case res := <-done:
-		return res.cf, res.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// flush sends a batch of items as a media group.
-func (b *uploadBatcher) flush(ctx context.Context, chatID int64, items []batchItem) {
-	fs.Debugf(b.fs, "flush: sending media group of %d items to chat %d", len(items), chatID)
-
-	groupItems := make([]api.MediaGroupItem, len(items))
-	for i, bi := range items {
-		groupItems[i] = bi.file
-	}
-
-	files, err := b.fs.client.SendMediaGroup(ctx, chatID, groupItems)
-
-	// Distribute results back to waiting goroutines.
-	for i, bi := range items {
-		if err != nil {
-			bi.done <- batchResult{err: err}
-		} else if i < len(files) {
-			bi.done <- batchResult{cf: files[i]}
-		} else {
-			bi.done <- batchResult{err: fmt.Errorf("media group returned fewer results than expected")}
-		}
-	}
-}
-
-// flushAll flushes all pending batches (called on Shutdown).
-func (b *uploadBatcher) flushAll(ctx context.Context) {
-	b.mu.Lock()
-	allPending := make(map[int64][]batchItem)
-	for chatID, items := range b.pending {
-		allPending[chatID] = items
-	}
-	b.pending = make(map[int64][]batchItem)
-	for _, t := range b.timers {
-		t.Stop()
-	}
-	b.timers = make(map[int64]*time.Timer)
-	b.mu.Unlock()
-
-	for chatID, items := range allPending {
-		// Flush in chunks of maxMediaGroupSize.
-		for len(items) > 0 {
-			n := len(items)
-			if n > maxMediaGroupSize {
-				n = maxMediaGroupSize
-			}
-			b.flush(ctx, chatID, items[:n])
-			items = items[n:]
-		}
-	}
 }
 
 // NewFs constructs a new Fs from the path, container:path.
@@ -500,7 +374,6 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		cache:  cache,
 		m:      m,
 	}
-	f.batcher = newUploadBatcher(f)
 	f.features = (&fs.Features{
 		CanHaveEmptyDirectories: false,
 		DuplicateFiles:          true,
@@ -675,25 +548,15 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		return nil, err
 	}
 
-	isPhoto := f.opt.SendAsPhoto && isImageFile(fileName)
+	var cf *api.CachedFile
+	var err error
 
-	// Upload the file data to Telegram's servers first.
-	uploaded, err := f.client.UploadFile(ctx, fileName, in)
-	if err != nil {
-		return nil, fmt.Errorf("upload %q: %w", fileName, err)
+	// Send as photo if configured and the file is an image.
+	if f.opt.SendAsPhoto && isImageFile(fileName) {
+		cf, err = f.client.SendPhoto(ctx, chatID, fileName, in, f.opt.Silent)
+	} else {
+		cf, err = f.client.SendDocument(ctx, chatID, fileName, size, in, f.opt.Silent)
 	}
-
-	mimeType := api.DetectMime(fileName)
-
-	// Queue through the batcher for media group sending.
-	item := api.MediaGroupItem{
-		File:     uploaded,
-		FileName: fileName,
-		MimeType: mimeType,
-		IsPhoto:  isPhoto,
-	}
-
-	cf, err := f.batcher.add(ctx, chatID, item)
 	if err != nil {
 		return nil, err
 	}
@@ -806,9 +669,8 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	return newObj, nil
 }
 
-// Shutdown flushes any pending media groups and saves the cache to disk.
+// Shutdown saves the cache to disk.
 func (f *Fs) Shutdown(ctx context.Context) error {
-	f.batcher.flushAll(ctx)
 	f.cache.Save()
 	f.persistSession()
 	return nil
