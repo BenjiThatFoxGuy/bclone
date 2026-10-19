@@ -522,6 +522,10 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		return nil, fmt.Errorf("telegram: invalid path %q - must be chats/<id>/<filename>", remote)
 	}
 
+	// Telegram chats are flat - strip any subdirectory paths from the filename.
+	// rclone passes relative paths like "Pictures/file.png" when copying recursively.
+	fileName = path.Base(fileName)
+
 	size := src.Size()
 	fs.Debugf(f, "Put: chatID=%d fileName=%q size=%d", chatID, fileName, size)
 	maxSize := f.client.MaxFileSize()
