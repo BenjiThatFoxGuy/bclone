@@ -339,8 +339,8 @@ type batchResult struct {
 }
 
 const (
-	maxMediaGroupSize = 10               // Telegram's album limit
-	batchFlushDelay   = 500 * time.Millisecond // wait for more files before flushing
+	maxMediaGroupSize = 10              // Telegram's album limit
+	batchFlushDelay   = 3 * time.Second // wait for more files before flushing
 )
 
 func newUploadBatcher(f *Fs) *uploadBatcher {

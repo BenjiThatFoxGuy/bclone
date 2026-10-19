@@ -893,8 +893,9 @@ func (c *Client) SendMediaGroup(ctx context.Context, chatID int64, items []Media
 			media = &tg.InputMediaUploadedPhoto{File: item.File}
 		} else {
 			media = &tg.InputMediaUploadedDocument{
-				File:     item.File,
-				MimeType: item.MimeType,
+				File:      item.File,
+				ForceFile: true, // required for documents in multi-media groups
+				MimeType:  item.MimeType,
 				Attributes: []tg.DocumentAttributeClass{
 					&tg.DocumentAttributeFilename{FileName: item.FileName},
 				},
@@ -903,6 +904,7 @@ func (c *Client) SendMediaGroup(ctx context.Context, chatID int64, items []Media
 		multiMedia[i] = tg.InputSingleMedia{
 			RandomID: randomID(),
 			Media:    media,
+			Message:  "", // required field, empty for file uploads
 		}
 	}
 
@@ -927,8 +929,9 @@ func (c *Client) sendUploadedDocument(ctx context.Context, chatID int64, f tg.In
 		Peer:     peer,
 		RandomID: randomID(),
 		Media: &tg.InputMediaUploadedDocument{
-			File:     f,
-			MimeType: mimeType,
+			File:      f,
+			ForceFile: true,
+			MimeType:  mimeType,
 			Attributes: []tg.DocumentAttributeClass{
 				&tg.DocumentAttributeFilename{FileName: fileName},
 			},
