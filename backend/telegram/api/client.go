@@ -821,8 +821,9 @@ func (c *Client) SendGIF(ctx context.Context, chatID int64, fileName string, r i
 		Silent:   silent,
 		RandomID: randomID(),
 		Media: &tg.InputMediaUploadedDocument{
-			File:     f,
-			MimeType: "image/gif",
+			NosoundVideo: true,
+			File:         f,
+			MimeType:     "image/gif",
 			Attributes: []tg.DocumentAttributeClass{
 				&tg.DocumentAttributeAnimated{},
 				&tg.DocumentAttributeFilename{FileName: fileName},
