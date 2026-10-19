@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"runtime"
@@ -536,6 +537,7 @@ func (c *Client) GetChatInfo(ctx context.Context, chatID int64) (*ChatInfo, erro
 // only messages newer than that ID are returned (incremental scan).
 // Returns messages with file attachments only.
 func (c *Client) GetMessages(ctx context.Context, chatID int64, offsetMsgID int, limit int) ([]*CachedFile, error) {
+	fs.Debugf("telegram", "GetMessages: chatID=%d offsetMsgID=%d limit=%d", chatID, offsetMsgID, limit)
 	peer, err := c.resolvePeer(ctx, chatID)
 	if err != nil {
 		return nil, err
@@ -549,6 +551,11 @@ func (c *Client) GetMessages(ctx context.Context, chatID int64, offsetMsgID int,
 		// (newest) and stop when we see offsetMsgID.
 		offsetID = 0
 	}
+
+	// Cap the number of API pages to avoid hanging on chats with huge history.
+	// 50 pages × 100 messages = 5000 most recent messages scanned.
+	const maxPages = 50
+	pages := 0
 
 	for {
 		history, err := c.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
@@ -582,7 +589,11 @@ func (c *Client) GetMessages(ctx context.Context, chatID int64, offsetMsgID int,
 			allFiles = append(allFiles, files...)
 		}
 
-		if hitOld || len(msgs) < 100 {
+		pages++
+		if hitOld || len(msgs) < 100 || pages >= maxPages {
+			if pages >= maxPages {
+				fs.Debugf("telegram", "GetMessages: hit page limit (%d pages), stopping scan", maxPages)
+			}
 			break
 		}
 		// Set offset for next page - use the oldest message ID from this batch.
@@ -593,6 +604,7 @@ func (c *Client) GetMessages(ctx context.Context, chatID int64, offsetMsgID int,
 		}
 	}
 
+	fs.Debugf("telegram", "GetMessages: found %d files in %d pages", len(allFiles), pages)
 	return allFiles, nil
 }
 
@@ -662,7 +674,8 @@ func (c *Client) SendDocument(ctx context.Context, chatID int64, fileName string
 	fs.Debugf("telegram", "SendDocument: upload complete, sending message")
 
 	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
-		Peer: peer,
+		Peer:     peer,
+		RandomID: randomID(),
 		Media: &tg.InputMediaUploadedDocument{
 			File:     f,
 			MimeType: DetectMime(fileName),
@@ -693,7 +706,8 @@ func (c *Client) SendPhoto(ctx context.Context, chatID int64, fileName string, r
 	}
 
 	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
-		Peer: peer,
+		Peer:     peer,
+		RandomID: randomID(),
 		Media: &tg.InputMediaUploadedPhoto{
 			File: f,
 		},
@@ -733,8 +747,9 @@ func (c *Client) SendWithReference(ctx context.Context, chatID int64, cf *Cached
 	}
 
 	result, err := c.api.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
-		Peer:  peer,
-		Media: media,
+		Peer:     peer,
+		RandomID: randomID(),
+		Media:    media,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("send with reference to %d: %w", chatID, err)
@@ -803,6 +818,14 @@ func (c *Client) resolvePeer(ctx context.Context, chatID int64) (tg.InputPeerCla
 		fs.Debugf("telegram", "resolvePeer: chatID=%d -> InputPeerChat (chatID=%d)", chatID, -chatID)
 		return &tg.InputPeerChat{ChatID: -chatID}, nil
 	}
+}
+
+// randomID generates a cryptographically random int64 for Telegram's
+// message dedup. Every MessagesSendMedia call requires a unique RandomID.
+func randomID() int64 {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return int64(binary.LittleEndian.Uint64(b[:]))
 }
 
 func (c *Client) buildInputFileLocation(cf *CachedFile) tg.InputFileLocationClass {

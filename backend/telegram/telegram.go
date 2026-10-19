@@ -712,6 +712,12 @@ func (f *Fs) parsePath(p string) (chatID int64, fileName string) {
 // ensureChat makes sure we have a cached file listing for the chat.
 // Does a full scan on first access, incremental on subsequent.
 func (f *Fs) ensureChat(ctx context.Context, chatID int64) error {
+	// Bots can't call messages.getHistory (BOT_METHOD_INVALID).
+	// They can still upload/download by message ID, just not list.
+	if f.client.IsBot() {
+		return nil
+	}
+
 	cc := f.cache.GetChatCache(chatID)
 	offsetMsgID := 0
 	if cc != nil {
