@@ -481,8 +481,12 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	}
 
 	if err := f.ensureChat(ctx, chatID); err != nil {
-		fs.Debugf(f, "NewObject: ensureChat failed: %v", err)
-		return nil, err
+		// Don't propagate scan errors as real errors - just treat as
+		// "file not found" so that Put can still upload. The scan might
+		// fail on a fresh chat with no messages, or if we don't have
+		// the right permissions to list history.
+		fs.Debugf(f, "NewObject: ensureChat failed (treating as not found): %v", err)
+		return nil, fs.ErrorObjectNotFound
 	}
 
 	cf := f.cache.LookupFile(chatID, fileName)
