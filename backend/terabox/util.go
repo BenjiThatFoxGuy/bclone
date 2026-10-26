@@ -1,13 +1,16 @@
-﻿package terabox
+package terabox
 
 import (
 	"encoding/base64"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"net/textproto"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
+
+	"crypto/md5"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/lib/rest"
@@ -94,24 +97,28 @@ func valuedCookie(cookie string) string {
 	return cookie
 }
 
+// decodeMD5 returns the server MD5 in canonical form.
+//
+// TeraBox's /api/create returns a plain 32 character hex MD5 (verified
+// against a real upload: the value matched md5sum of the source file).
+// The previous implementation always ran a "decode" transformation on
+// 32 character input, which turned that correct value into a different
+// hash and made every chunked upload fail its control check.
 func decodeMD5(md5 string) string {
-	if len(md5) != 32 {
-		return md5
+	return strings.ToLower(strings.TrimSpace(md5))
+}
+
+// isHexMD5 reports whether s is a plain 32 character hexadecimal MD5.
+func isHexMD5(s string) bool {
+	if len(s) != 32 {
+		return false
 	}
-
-	restoredHexChar := fmt.Sprintf("%x", md5[9]-'g')
-	o := md5[:9] + restoredHexChar + md5[10:]
-
-	// Apply XOR transformation to each character
-	n := make([]byte, 0, 32)
-	for i := 0; i < len(o); i++ {
-		orig, _ := strconv.ParseInt(string(o[i]), 16, 8)
-		xor := int(orig) ^ (i & 15)
-		n = append(n, fmt.Sprintf("%x", xor)[0])
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
 	}
-
-	e := string(n[8:16]) + string(n[0:8]) + string(n[24:32]) + string(n[16:24])
-	return e
+	return true
 }
 
 func getChunkSize(fileSize int64, isVIP bool) int64 {
@@ -131,4 +138,61 @@ func getChunkSize(fileSize int64, isVIP bool) int64 {
 	}
 
 	return limitSizes[len(limitSizes)-1] * MiB
+}
+
+// rapidUploadData - hashes of the file needed for the rapid upload
+// (server side dedup) attempt and for the precreate/create steps
+type rapidUploadData struct {
+	sliceMD5     string   // md5 of the first 256KiB of the file
+	contentMD5   string   // md5 of the whole file
+	contentCrc32 string   // crc32 of the whole file
+	blockList    []string // md5 of every chunk
+	blockData    [][]byte // raw data of every chunk, kept for the upload step
+}
+
+// rapidUploadInfo reads the stream once and computes the hashes needed for
+// rapid upload (server-side deduplication) and precreate/create steps, while
+// preserving chunk data in memory to avoid re-reading the source stream.
+func rapidUploadInfo(in io.Reader, size int64, chunkSize int64) (*rapidUploadData, error) {
+	res := &rapidUploadData{}
+	contentHash := md5.New()
+	crcHash := crc32.NewIEEE()
+
+	chunkNum := 0
+	for {
+		chunk := make([]byte, chunkSize)
+		n, err := io.ReadFull(in, chunk)
+		data := chunk[:n]
+		if n > 0 {
+			res.blockData = append(res.blockData, data)
+			res.blockList = append(res.blockList, fmt.Sprintf("%x", md5.Sum(data)))
+			contentHash.Write(data)
+			_, _ = crcHash.Write(data)
+			if chunkNum == 0 {
+				sliceLen := int64(256 * 1024)
+				if int64(n) < sliceLen {
+					sliceLen = int64(n)
+				}
+				res.sliceMD5 = fmt.Sprintf("%x", md5.Sum(data[:sliceLen]))
+			}
+			chunkNum++
+		}
+		if err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			}
+			return nil, err
+		}
+	}
+
+	if chunkNum == 0 {
+		emptyMD5 := fmt.Sprintf("%x", md5.Sum(nil))
+		res.blockList = []string{emptyMD5}
+		res.blockData = [][]byte{{}}
+		res.sliceMD5 = emptyMD5
+	}
+	res.contentMD5 = fmt.Sprintf("%x", contentHash.Sum(nil))
+	res.contentCrc32 = fmt.Sprintf("%d", crcHash.Sum32())
+
+	return res, nil
 }

@@ -126,3 +126,17 @@ type ResponseUser struct {
 		} `json:"member_info"`
 	} `json:"data"`
 }
+
+// ResponseRapidUpload instant upload (dedup) result
+type ResponseRapidUpload struct {
+	ErrorAPI
+	Info struct {
+		ID    uint64 `json:"fs_id"`
+		MD5   string `json:"md5"`
+		Size  int64  `json:"size"`
+		Path  string `json:"path"`
+		Isdir int    `json:"isdir"`
+		Mtime int64  `json:"mtime"`
+		Ctime int64  `json:"ctime"`
+	} `json:"info"`
+}
