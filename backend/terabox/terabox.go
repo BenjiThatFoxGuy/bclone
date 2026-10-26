@@ -42,6 +42,24 @@ const (
 	// attackConstant = 0 // start with max sleep
 )
 
+// errUnsupportedName is returned before any API call when a name contains a
+// character TeraBox cannot store. TeraBox rejects every non-BMP rune (U+10000
+// and above, which includes most emoji) with errno -7 "Invalid file name".
+var errUnsupportedName = errors.New("terabox: file name contains an unsupported non-BMP character (for example an emoji); remove it from the name")
+
+// checkRemoteName rejects names which TeraBox cannot store. rclone's encoder
+// cannot escape these characters because TeraBox has no equivalent
+// representation for them, so failing early gives the user a useful error
+// instead of a delayed errno -7 from /api/precreate.
+func checkRemoteName(remote string) error {
+	for _, r := range remote {
+		if r > 0xFFFF {
+			return fmt.Errorf("%w: %q (U+%04X)", errUnsupportedName, remote, r)
+		}
+	}
+	return nil
+}
+
 // Check the interfaces are satisfied
 var (
 	_ fs.Fs             = (*Fs)(nil)
@@ -205,6 +223,14 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		root = "/"
 	}
 
+	// Reject unsupported names here as well as in the operations below. NewFs
+	// looks the root up with /api/filemetas before Mkdir/Put/NewObject run, so
+	// without this check the user only sees TeraBox's generic "Invalid file
+	// name" error instead of an actionable one.
+	if err := checkRemoteName(root); err != nil {
+		return nil, err
+	}
+
 	f := &Fs{
 		name:     name,
 		root:     root,
@@ -347,6 +373,9 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
 	debug(f.opt, 1, "List %s;", dir)
+	if err := checkRemoteName(dir); err != nil {
+		return nil, err
+	}
 
 	if f.root != "/" && f.origRootItem == nil {
 		return nil, fs.ErrorDirNotFound
@@ -389,6 +418,9 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 // returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	debug(f.opt, 1, "NewObject %s;", remote)
+	if err := checkRemoteName(remote); err != nil {
+		return nil, err
+	}
 
 	var item *api.Item
 	if f.origRoot == libPath.Join(f.root, remote) {
@@ -441,6 +473,9 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	if src.Size() < 0 {
 		return nil, errors.New("refusing to update with unknown size")
 	}
+	if err := checkRemoteName(src.Remote()); err != nil {
+		return nil, err
+	}
 
 	// TeraBox rejects some characters in file names (e.g. double quotes),
 	// so apply the configured encoding like every other rclone backend.
@@ -488,6 +523,9 @@ func (f *Fs) newObjectAfterUpload(ctx context.Context, remote, uploadPath string
 // Shouldn't return an error if it already exists
 func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 	debug(f.opt, 1, "Mkdir %s;", dir)
+	if err := checkRemoteName(dir); err != nil {
+		return err
+	}
 
 	pth := f.remotePath(dir)
 	if pth == "" || pth == "." || pth == "/" {
@@ -536,6 +574,9 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 	if src.Size() < 0 {
 		return nil, errors.New("refusing to update with unknown size")
 	}
+	if err := checkRemoteName(src.Remote()); err != nil {
+		return nil, err
+	}
 
 	uploadPath := f.remotePath(src.Remote())
 	if err := f.apiFileUpload(ctx, uploadPath, src.Size(), src.ModTime(ctx), in, options, 1); err != nil {
@@ -557,6 +598,9 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 // If it isn't possible then return fs.ErrorCantCopy
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	debug(f.opt, 1, "Copy %+v; %s;", src, remote)
+	if err := checkRemoteName(remote); err != nil {
+		return nil, err
+	}
 
 	srcObj, ok := src.(*Object)
 	if !ok {
@@ -595,6 +639,9 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	debug(f.opt, 1, "Move %+v; %s;", src, remote)
+	if err := checkRemoteName(remote); err != nil {
+		return nil, err
+	}
 
 	srcObj, ok := src.(*Object)
 	if !ok {
@@ -634,6 +681,9 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
 	debug(f.opt, 1, "DirMove %+v; %s; %s;", src, srcRemote, dstRemote)
+	if err := checkRemoteName(dstRemote); err != nil {
+		return err
+	}
 
 	srcFs, ok := src.(*Fs)
 	if !ok {
@@ -811,6 +861,9 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 	if src.Size() < 0 {
 		return errors.New("refusing to update with unknown size")
+	}
+	if err := checkRemoteName(o.remote); err != nil {
+		return err
 	}
 
 	if err := o.fs.apiFileUpload(ctx, o.fs.remotePath(o.remote), src.Size(), src.ModTime(ctx), in, options, 3); err != nil {

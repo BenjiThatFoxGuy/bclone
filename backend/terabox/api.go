@@ -320,6 +320,9 @@ func (f *Fs) apiItemInfo(ctx context.Context, path string, downloadLink bool) (*
 }
 
 func (f *Fs) apiMkDir(ctx context.Context, path string) error {
+	if err := checkRemoteName(path); err != nil {
+		return err
+	}
 	opt := NewRequest(http.MethodPost, "/api/create")
 	opt.MultipartParams = url.Values{}
 	opt.MultipartParams.Set("path", path)
@@ -484,6 +487,9 @@ func (f *Fs) apiQuotaInfo(ctx context.Context) (*api.ResponseQuota, error) {
 
 // Upload file
 func (f *Fs) apiFileUpload(ctx context.Context, path string, size int64, modTime time.Time, in io.Reader, options []fs.OpenOption, overwriteMode uint8) error {
+	if err := checkRemoteName(path); err != nil {
+		return err
+	}
 	f.isPremiumMX.Do(func() {
 		_ = f.apiCheckPremium(ctx)
 	})
