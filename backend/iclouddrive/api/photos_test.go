@@ -1320,9 +1320,7 @@ func TestCkBoolFieldUnmarshal(t *testing.T) {
 }
 
 func TestDeleteAsset(t *testing.T) {
-	old := deleteBackoffBase
-	deleteBackoffBase = time.Millisecond
-	t.Cleanup(func() { deleteBackoffBase = old })
+	setFastDeletePacing(t)
 
 	var modifies []map[string]any
 	lookups := 0
@@ -1409,9 +1407,7 @@ func TestLoadDiskCacheWithoutAssetIDs(t *testing.T) {
 }
 
 func TestDeleteAssetSerializedAndRetried(t *testing.T) {
-	old := deleteBackoffBase
-	deleteBackoffBase = time.Millisecond
-	t.Cleanup(func() { deleteBackoffBase = old })
+	setFastDeletePacing(t)
 
 	var inFlight, maxInFlight atomic.Int32
 	var busy atomic.Int32
@@ -1474,4 +1470,57 @@ func TestDeleteAssetGivesUpOnPermanentError(t *testing.T) {
 	err := ps.DeleteAsset(context.Background(), "a", "PrimarySync")
 	assert.ErrorContains(t, err, "ACCESS_DENIED")
 	assert.Equal(t, 1, modifies)
+}
+
+func setFastDeletePacing(t *testing.T) {
+	t.Helper()
+	oldGap, oldBase := deleteGap, deleteBackoffBase
+	deleteGap, deleteBackoffBase = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { deleteGap, deleteBackoffBase = oldGap, oldBase })
+}
+
+func TestDeleteAssetBackoffDoesNotBlockOthers(t *testing.T) {
+	setFastDeletePacing(t)
+	oldBase := deleteBackoffBase
+	deleteBackoffBase = 200 * time.Millisecond
+	t.Cleanup(func() { deleteBackoffBase = oldBase })
+
+	ps := newHTTPTestPhotosService(t, "test", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Records []struct {
+				RecordName string `json:"recordName"`
+			} `json:"records"`
+			Operations []struct {
+				Record struct {
+					RecordName string `json:"recordName"`
+				} `json:"record"`
+			} `json:"operations"`
+		}
+		require.NoError(t, readJSONBody(r, &body))
+		if strings.Contains(r.URL.Path, "/records/lookup") {
+			writeJSON(t, w, map[string]any{"records": []map[string]any{{
+				"recordName": body.Records[0].RecordName, "recordType": "CPLAsset", "recordChangeTag": "t",
+			}}})
+			return
+		}
+		if body.Operations[0].Record.RecordName == "slow" {
+			writeJSON(t, w, map[string]any{"records": []map[string]any{{"serverErrorCode": "ZONE_BUSY", "reason": "busy"}}})
+			return
+		}
+		writeJSON(t, w, map[string]any{"records": []map[string]any{{"recordName": "ok"}}})
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = ps.DeleteAsset(ctx, "slow", "PrimarySync")
+	}()
+	time.Sleep(20 * time.Millisecond) // let "slow" get pushed back and start waiting
+
+	start := time.Now()
+	require.NoError(t, ps.DeleteAsset(context.Background(), "fast", "PrimarySync"))
+	assert.Less(t, time.Since(start), 150*time.Millisecond, "a delete waiting to retry must not hold up others")
+	cancel()
+	<-done
 }
