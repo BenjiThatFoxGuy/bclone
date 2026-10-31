@@ -554,10 +554,10 @@ jobs:
       - name: Extract binaries for Docker
         run: |
           for arch in amd64 arm64; do
-            zip=$(ls /tmp/build/rclone-*-linux-${arch}.zip)
+            zip=$(ls /tmp/build/bclone-*-linux-${arch}.zip)
             unzip -o "$zip" -d "/tmp/extract-${arch}"
             mkdir -p "build/bclone-${arch}"
-            cp /tmp/extract-${arch}/rclone-*-linux-${arch}/rclone "build/bclone-${arch}/rclone"
+            cp /tmp/extract-${arch}/bclone-*-linux-${arch}/bclone "build/bclone-${arch}/rclone"
           done
 
       - name: Set up Docker Buildx
