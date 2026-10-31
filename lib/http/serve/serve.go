@@ -1,4 +1,4 @@
-﻿// Package serve deals with serving objects over HTTP
+// Package serve deals with serving objects over HTTP
 package serve
 
 import (

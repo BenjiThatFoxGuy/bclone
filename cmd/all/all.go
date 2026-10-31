@@ -1,4 +1,4 @@
-﻿// Package all imports all the commands
+// Package all imports all the commands
 package all
 
 import (

@@ -1,4 +1,4 @@
-﻿// Package main provides utilities for encoder.
+// Package main provides utilities for encoder.
 package main
 
 import (

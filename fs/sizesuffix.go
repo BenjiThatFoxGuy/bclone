@@ -1,4 +1,4 @@
-﻿package fs
+package fs
 
 // SizeSuffix is parsed by flag with K/M/G binary suffixes
 import (

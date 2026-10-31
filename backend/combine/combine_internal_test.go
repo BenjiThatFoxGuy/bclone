@@ -1,4 +1,4 @@
-﻿package combine
+package combine
 
 import (
 	"fmt"

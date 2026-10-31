@@ -1,4 +1,4 @@
-﻿// Run the more functional vfstest package on the vfs
+// Run the more functional vfstest package on the vfs
 
 package vfs_test
 

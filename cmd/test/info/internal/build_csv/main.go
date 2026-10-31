@@ -1,4 +1,4 @@
-﻿// Package main provides utilities for the info test command.
+// Package main provides utilities for the info test command.
 package main
 
 import (

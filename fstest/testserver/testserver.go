@@ -1,4 +1,4 @@
-﻿// Package testserver starts and stops test servers if required
+// Package testserver starts and stops test servers if required
 package testserver
 
 import (

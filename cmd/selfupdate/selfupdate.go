@@ -1,4 +1,4 @@
-﻿//go:build !noselfupdate
+//go:build !noselfupdate
 
 // Package selfupdate provides the selfupdate command.
 package selfupdate

@@ -1,4 +1,4 @@
-﻿package servetest
+package servetest
 
 import (
 	"context"

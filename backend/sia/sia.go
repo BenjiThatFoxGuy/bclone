@@ -1,4 +1,4 @@
-﻿// Package sia provides an interface to the Sia storage system.
+// Package sia provides an interface to the Sia storage system.
 package sia
 
 import (

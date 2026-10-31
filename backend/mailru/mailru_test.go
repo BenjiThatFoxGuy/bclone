@@ -1,4 +1,4 @@
-﻿// Test Mailru filesystem interface
+// Test Mailru filesystem interface
 package mailru_test
 
 import (

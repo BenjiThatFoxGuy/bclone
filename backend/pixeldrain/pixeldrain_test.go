@@ -1,4 +1,4 @@
-﻿// Test pixeldrain filesystem interface
+// Test pixeldrain filesystem interface
 package pixeldrain_test
 
 import (

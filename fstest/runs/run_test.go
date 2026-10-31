@@ -1,4 +1,4 @@
-﻿package runs
+package runs
 
 import (
 	"errors"

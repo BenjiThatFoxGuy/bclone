@@ -1,4 +1,4 @@
-﻿// Upload object to QingStor
+// Upload object to QingStor
 
 //go:build !plan9 && !js
 

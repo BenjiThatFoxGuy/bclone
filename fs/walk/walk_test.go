@@ -1,4 +1,4 @@
-﻿package walk
+package walk
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-﻿// Interfaces for the slog package
+// Interfaces for the slog package
 
 package log
 

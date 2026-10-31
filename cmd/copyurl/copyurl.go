@@ -1,4 +1,4 @@
-﻿// Package copyurl provides the copyurl command.
+// Package copyurl provides the copyurl command.
 package copyurl
 
 import (

@@ -1,4 +1,4 @@
-﻿//go:build !plan9
+//go:build !plan9
 
 // Package hdfs provides an interface to the HDFS storage system.
 package hdfs

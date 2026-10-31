@@ -1,4 +1,4 @@
-﻿// Upload large files for b2
+// Upload large files for b2
 //
 // Docs - https://www.backblaze.com/docs/cloud-storage-large-files
 

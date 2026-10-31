@@ -1,4 +1,4 @@
-﻿// Package dropbox provides an interface to Dropbox object storage
+// Package dropbox provides an interface to Dropbox object storage
 package dropbox
 
 // FIXME dropbox for business would be quite easy to add

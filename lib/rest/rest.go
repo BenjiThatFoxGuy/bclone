@@ -1,4 +1,4 @@
-﻿// Package rest implements a simple REST wrapper
+// Package rest implements a simple REST wrapper
 //
 // All methods are safe for concurrent calling.
 package rest

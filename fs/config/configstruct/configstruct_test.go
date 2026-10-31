@@ -1,4 +1,4 @@
-﻿package configstruct_test
+package configstruct_test
 
 import (
 	"fmt"

@@ -1,4 +1,4 @@
-﻿package info
+package info
 
 // Create files with all possible base 32768 file names
 

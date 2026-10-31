@@ -1,4 +1,4 @@
-﻿// Package odrvcookie can fetch authentication cookies for a sharepoint webdav endpoint
+// Package odrvcookie can fetch authentication cookies for a sharepoint webdav endpoint
 package odrvcookie
 
 import (

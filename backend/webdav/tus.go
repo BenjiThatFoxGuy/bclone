@@ -1,4 +1,4 @@
-﻿package webdav
+package webdav
 
 /*
    Chunked upload based on the tus protocol for ownCloud Infinite Scale

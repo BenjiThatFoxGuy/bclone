@@ -1,4 +1,4 @@
-﻿// Package combine implements a backend to combine multiple remotes in a directory tree
+// Package combine implements a backend to combine multiple remotes in a directory tree
 package combine
 
 /*

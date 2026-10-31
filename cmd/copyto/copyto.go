@@ -1,4 +1,4 @@
-﻿// Package copyto provides the copyto command.
+// Package copyto provides the copyto command.
 package copyto
 
 import (

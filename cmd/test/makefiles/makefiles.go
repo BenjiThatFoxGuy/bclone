@@ -1,4 +1,4 @@
-﻿// Package makefiles builds a directory structure with the required
+// Package makefiles builds a directory structure with the required
 // number of files in of the required size.
 package makefiles
 

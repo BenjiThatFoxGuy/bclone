@@ -1,4 +1,4 @@
-﻿// Package filefabric provides an interface to Storage Made Easy's
+// Package filefabric provides an interface to Storage Made Easy's
 // Enterprise File Fabric storage system.
 package filefabric
 

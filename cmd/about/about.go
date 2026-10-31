@@ -1,4 +1,4 @@
-﻿// Package about provides the about command.
+// Package about provides the about command.
 package about
 
 import (

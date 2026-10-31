@@ -1,4 +1,4 @@
-﻿// Package webdav implements a WebDAV server backed by rclone VFS
+// Package webdav implements a WebDAV server backed by rclone VFS
 package webdav
 
 import (

@@ -1,4 +1,4 @@
-﻿// Package filelu provides an interface to the FileLu storage system.
+// Package filelu provides an interface to the FileLu storage system.
 package filelu
 
 import (

@@ -1,4 +1,4 @@
-﻿// Package walk walks directories
+// Package walk walks directories
 package walk
 
 import (

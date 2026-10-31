@@ -1,4 +1,4 @@
-﻿// Package linkbox provides an interface to the linkbox.to Cloud storage system.
+// Package linkbox provides an interface to the linkbox.to Cloud storage system.
 //
 // API docs: https://www.linkbox.to/api-docs
 package linkbox

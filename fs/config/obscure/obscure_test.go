@@ -1,4 +1,4 @@
-﻿package obscure
+package obscure
 
 import (
 	"bytes"

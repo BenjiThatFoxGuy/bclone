@@ -1,4 +1,4 @@
-﻿// Package sugarsync provides an interface to the Sugarsync
+// Package sugarsync provides an interface to the Sugarsync
 // object storage system.
 package sugarsync
 

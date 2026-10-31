@@ -1,4 +1,4 @@
-﻿// Create the help text for transform
+// Create the help text for transform
 //
 // Run with go generate (defined in transform.go)
 //

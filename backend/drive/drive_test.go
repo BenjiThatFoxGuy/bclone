@@ -1,4 +1,4 @@
-﻿// Test Drive filesystem interface
+// Test Drive filesystem interface
 
 package drive
 

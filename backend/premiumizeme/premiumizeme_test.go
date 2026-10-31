@@ -1,4 +1,4 @@
-﻿// Test filesystem interface
+// Test filesystem interface
 package premiumizeme_test
 
 import (

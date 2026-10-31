@@ -1,4 +1,4 @@
-﻿// Options for Open
+// Options for Open
 
 package fs
 

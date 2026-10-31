@@ -1,4 +1,4 @@
-﻿// Package list contains list functions
+// Package list contains list functions
 package list
 
 import (

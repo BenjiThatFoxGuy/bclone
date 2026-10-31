@@ -1,4 +1,4 @@
-﻿// Test transform
+// Test transform
 
 package sync
 

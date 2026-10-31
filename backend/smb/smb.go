@@ -1,4 +1,4 @@
-﻿// Package smb provides an interface to SMB servers
+// Package smb provides an interface to SMB servers
 package smb
 
 import (

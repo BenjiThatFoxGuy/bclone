@@ -1,4 +1,4 @@
-﻿// Package yandex provides an interface to the Yandex storage system.
+// Package yandex provides an interface to the Yandex storage system.
 package yandex
 
 import (

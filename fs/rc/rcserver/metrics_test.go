@@ -1,4 +1,4 @@
-﻿package rcserver
+package rcserver
 
 import (
 	"context"

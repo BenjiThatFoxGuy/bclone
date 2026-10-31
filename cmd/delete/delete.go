@@ -1,4 +1,4 @@
-﻿// Package delete provides the delete command.
+// Package delete provides the delete command.
 package delete
 
 import (

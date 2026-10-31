@@ -1,4 +1,4 @@
-﻿// Package sha1sum provides the sha1sum command.
+// Package sha1sum provides the sha1sum command.
 package sha1sum
 
 import (

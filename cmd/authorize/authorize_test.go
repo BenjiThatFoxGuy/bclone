@@ -1,4 +1,4 @@
-﻿package authorize
+package authorize
 
 import (
 	"bytes"

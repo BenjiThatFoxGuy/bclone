@@ -1,4 +1,4 @@
-﻿package hidrive
+package hidrive
 
 // This file is for helper-functions which may provide more general and
 // specialized functionality than the generic interfaces.

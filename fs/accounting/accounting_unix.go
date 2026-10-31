@@ -1,4 +1,4 @@
-﻿// Accounting and limiting reader
+// Accounting and limiting reader
 // Unix specific functions.
 
 //go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris

@@ -1,4 +1,4 @@
-﻿// Package histogram provides the histogram test command.
+// Package histogram provides the histogram test command.
 package histogram
 
 import (

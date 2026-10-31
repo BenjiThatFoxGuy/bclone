@@ -1,4 +1,4 @@
-﻿// Run a test
+// Run a test
 
 package runs
 

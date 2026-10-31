@@ -1,4 +1,4 @@
-﻿package opendrive
+package opendrive
 
 import (
 	"encoding/json"

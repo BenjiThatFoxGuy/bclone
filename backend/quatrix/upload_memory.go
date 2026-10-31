@@ -1,4 +1,4 @@
-﻿package quatrix
+package quatrix
 
 import (
 	"sync"

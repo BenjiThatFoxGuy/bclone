@@ -1,4 +1,4 @@
-﻿// Implementation for Dataverse
+// Implementation for Dataverse
 
 package doi
 

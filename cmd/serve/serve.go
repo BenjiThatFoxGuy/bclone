@@ -1,4 +1,4 @@
-﻿// Package serve provides the serve command.
+// Package serve provides the serve command.
 package serve
 
 import (

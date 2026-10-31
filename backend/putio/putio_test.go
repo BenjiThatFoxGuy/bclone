@@ -1,4 +1,4 @@
-﻿// Test Put.io filesystem interface
+// Test Put.io filesystem interface
 package putio
 
 import (

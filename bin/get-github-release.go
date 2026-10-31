@@ -1,4 +1,4 @@
-﻿//go:build ignore
+//go:build ignore
 
 // Get the latest release from a github project
 //

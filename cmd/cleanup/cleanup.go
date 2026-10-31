@@ -1,4 +1,4 @@
-﻿// Package cleanup provides the cleanup command.
+// Package cleanup provides the cleanup command.
 package cleanup
 
 import (

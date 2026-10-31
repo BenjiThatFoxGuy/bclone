@@ -1,4 +1,4 @@
-﻿// Test suite for rclonefs
+// Test suite for rclonefs
 
 package vfstest
 

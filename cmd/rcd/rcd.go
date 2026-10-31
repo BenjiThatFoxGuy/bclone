@@ -1,4 +1,4 @@
-﻿// Package rcd provides the rcd command.
+// Package rcd provides the rcd command.
 package rcd
 
 import (

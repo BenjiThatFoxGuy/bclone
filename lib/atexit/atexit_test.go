@@ -1,4 +1,4 @@
-﻿package atexit
+package atexit
 
 import (
 	"os"

@@ -1,4 +1,4 @@
-﻿// Package alldebrid provides an interface to the alldebrid.com
+// Package alldebrid provides an interface to the alldebrid.com
 // object storage system.
 package alldebrid
 

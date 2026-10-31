@@ -1,4 +1,4 @@
-﻿// Package api contains definitions for using the premiumize.me API
+// Package api contains definitions for using the premiumize.me API
 package api
 
 import (

@@ -1,4 +1,4 @@
-﻿package touch
+package touch
 
 import (
 	"context"

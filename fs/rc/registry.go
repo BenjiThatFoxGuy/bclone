@@ -1,4 +1,4 @@
-﻿// Define the registry
+// Define the registry
 
 package rc
 

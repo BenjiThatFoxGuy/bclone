@@ -1,4 +1,4 @@
-﻿// Structures and utilities for backend config
+// Structures and utilities for backend config
 //
 //
 

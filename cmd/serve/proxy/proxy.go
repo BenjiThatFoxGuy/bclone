@@ -1,4 +1,4 @@
-﻿// Package proxy implements a programmable proxy for rclone serve
+// Package proxy implements a programmable proxy for rclone serve
 package proxy
 
 import (

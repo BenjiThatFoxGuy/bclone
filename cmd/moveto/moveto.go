@@ -1,4 +1,4 @@
-﻿// Package moveto provides the moveto command.
+// Package moveto provides the moveto command.
 package moveto
 
 import (

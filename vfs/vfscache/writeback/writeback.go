@@ -1,4 +1,4 @@
-﻿// Package writeback keeps track of the files which need to be written
+// Package writeback keeps track of the files which need to be written
 // back to storage
 package writeback
 

@@ -1,4 +1,4 @@
-﻿// Package config provides the config command.
+// Package config provides the config command.
 package config
 
 import (

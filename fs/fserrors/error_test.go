@@ -1,4 +1,4 @@
-﻿package fserrors
+package fserrors
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 // BIN protocol constants
 const (

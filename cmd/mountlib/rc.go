@@ -1,4 +1,4 @@
-﻿package mountlib
+package mountlib
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-﻿// Package hashsum provides the hashsum command.
+// Package hashsum provides the hashsum command.
 package hashsum
 
 import (

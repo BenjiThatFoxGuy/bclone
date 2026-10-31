@@ -1,4 +1,4 @@
-﻿// Package mmap implements a large block memory allocator using
+// Package mmap implements a large block memory allocator using
 // anonymous memory maps.
 
 //go:build !plan9 && !windows && !js

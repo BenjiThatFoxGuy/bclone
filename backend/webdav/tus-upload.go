@@ -1,4 +1,4 @@
-﻿package webdav
+package webdav
 
 import (
 	"bytes"

@@ -1,4 +1,4 @@
-﻿package bisync_test
+package bisync_test
 
 import (
 	"fmt"

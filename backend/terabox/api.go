@@ -1,4 +1,4 @@
-﻿package terabox
+package terabox
 
 import (
 	"bytes"

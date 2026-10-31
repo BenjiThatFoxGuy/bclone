@@ -1,4 +1,4 @@
-﻿package local
+package local
 
 import (
 	"runtime"

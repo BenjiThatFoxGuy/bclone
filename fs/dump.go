@@ -1,4 +1,4 @@
-﻿package fs
+package fs
 
 // DumpFlags describes the Dump options in force
 type DumpFlags = Bits[dumpChoices]

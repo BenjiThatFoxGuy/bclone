@@ -1,4 +1,4 @@
-﻿// Test Quatrix filesystem interface
+// Test Quatrix filesystem interface
 package quatrix_test
 
 import (

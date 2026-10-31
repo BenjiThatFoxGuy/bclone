@@ -1,4 +1,4 @@
-﻿package pacer
+package pacer
 
 import (
 	"errors"

@@ -1,4 +1,4 @@
-﻿package ulozto
+package ulozto
 
 import (
 	"context"

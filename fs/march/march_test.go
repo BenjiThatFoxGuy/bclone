@@ -1,4 +1,4 @@
-﻿// Internal tests for march
+// Internal tests for march
 
 package march
 

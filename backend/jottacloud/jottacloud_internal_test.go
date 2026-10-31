@@ -1,4 +1,4 @@
-﻿package jottacloud
+package jottacloud
 
 import (
 	"context"

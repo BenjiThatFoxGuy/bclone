@@ -1,4 +1,4 @@
-﻿// Package object defines some useful Objects
+// Package object defines some useful Objects
 package object
 
 import (

@@ -1,4 +1,4 @@
-﻿// Package settier provides the settier command.
+// Package settier provides the settier command.
 package settier
 
 import (

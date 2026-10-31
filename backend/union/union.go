@@ -1,4 +1,4 @@
-﻿// Package union implements a virtual provider to join existing remotes.
+// Package union implements a virtual provider to join existing remotes.
 package union
 
 import (

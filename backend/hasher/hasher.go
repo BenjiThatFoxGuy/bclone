@@ -1,4 +1,4 @@
-﻿// Package hasher implements a checksum handling overlay backend
+// Package hasher implements a checksum handling overlay backend
 package hasher
 
 import (

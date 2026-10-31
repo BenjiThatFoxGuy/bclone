@@ -1,4 +1,4 @@
-﻿package chunksize
+package chunksize
 
 import (
 	"testing"

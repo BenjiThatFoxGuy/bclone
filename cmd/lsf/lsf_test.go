@@ -1,4 +1,4 @@
-﻿package lsf
+package lsf
 
 import (
 	"bytes"

@@ -1,4 +1,4 @@
-﻿// Package netstorage provides an interface to Akamai NetStorage API
+// Package netstorage provides an interface to Akamai NetStorage API
 package netstorage
 
 import (

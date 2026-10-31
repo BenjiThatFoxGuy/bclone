@@ -1,4 +1,4 @@
-﻿// Package multipart implements generic multipart uploading.
+// Package multipart implements generic multipart uploading.
 package multipart
 
 import (

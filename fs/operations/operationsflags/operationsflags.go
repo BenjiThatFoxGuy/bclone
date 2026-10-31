@@ -1,4 +1,4 @@
-﻿// Package operationsflags defines the flags used by rclone operations.
+// Package operationsflags defines the flags used by rclone operations.
 // It is decoupled into a separate package so it can be replaced.
 package operationsflags
 

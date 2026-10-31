@@ -1,4 +1,4 @@
-﻿// Package cmdtest creates a testable interface to rclone main
+// Package cmdtest creates a testable interface to rclone main
 //
 // The interface is used to perform end-to-end test of
 // commands, flags, environment variables etc.

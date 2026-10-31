@@ -1,4 +1,4 @@
-﻿// Package testy contains test utilities for rclone
+// Package testy contains test utilities for rclone
 package testy
 
 import (

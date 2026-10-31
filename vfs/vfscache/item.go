@@ -1,4 +1,4 @@
-﻿package vfscache
+package vfscache
 
 import (
 	"context"

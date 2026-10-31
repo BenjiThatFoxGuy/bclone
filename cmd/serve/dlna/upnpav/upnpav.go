@@ -1,4 +1,4 @@
-﻿// Package upnpav provides utilities for DLNA server.
+// Package upnpav provides utilities for DLNA server.
 package upnpav
 
 import (

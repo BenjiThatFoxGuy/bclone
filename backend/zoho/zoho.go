@@ -1,4 +1,4 @@
-﻿// Package zoho provides an interface to the Zoho Workdrive
+// Package zoho provides an interface to the Zoho Workdrive
 // storage system.
 package zoho
 

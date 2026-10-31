@@ -1,4 +1,4 @@
-﻿package hidrivehash_test
+package hidrivehash_test
 
 import (
 	"crypto/sha1"

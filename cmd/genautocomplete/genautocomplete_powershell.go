@@ -1,4 +1,4 @@
-﻿package genautocomplete
+package genautocomplete
 
 import (
 	"bytes"

@@ -1,4 +1,4 @@
-﻿// Package fshttp contains the common http parts of the config, Transport and Client
+// Package fshttp contains the common http parts of the config, Transport and Client
 package fshttp
 
 import (

@@ -1,4 +1,4 @@
-﻿// Package dlna provides DLNA server.
+// Package dlna provides DLNA server.
 package dlna
 
 import (

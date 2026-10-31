@@ -1,4 +1,4 @@
-﻿// Package googlecloudstorage provides an interface to Google Cloud Storage
+// Package googlecloudstorage provides an interface to Google Cloud Storage
 package googlecloudstorage
 
 /*

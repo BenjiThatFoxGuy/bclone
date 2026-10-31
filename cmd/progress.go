@@ -1,4 +1,4 @@
-﻿// Show the dynamic progress bar
+// Show the dynamic progress bar
 
 package cmd
 

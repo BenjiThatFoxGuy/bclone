@@ -1,4 +1,4 @@
-﻿// Package crypt provides wrappers for Fs and Object which implement encryption
+// Package crypt provides wrappers for Fs and Object which implement encryption
 package crypt
 
 import (

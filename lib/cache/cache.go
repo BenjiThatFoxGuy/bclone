@@ -1,4 +1,4 @@
-﻿// Package cache implements a simple cache where the entries are
+// Package cache implements a simple cache where the entries are
 // expired after a given time (5 minutes of disuse by default).
 package cache
 

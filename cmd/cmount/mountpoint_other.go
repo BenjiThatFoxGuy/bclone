@@ -1,4 +1,4 @@
-﻿//go:build cmount && cgo && !windows
+//go:build cmount && cgo && !windows
 
 package cmount
 

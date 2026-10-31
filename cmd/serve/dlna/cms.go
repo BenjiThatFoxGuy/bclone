@@ -1,4 +1,4 @@
-﻿package dlna
+package dlna
 
 import (
 	"net/http"

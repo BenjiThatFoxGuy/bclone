@@ -1,4 +1,4 @@
-﻿// Package http provides a registration interface for http services
+// Package http provides a registration interface for http services
 package http
 
 import (
