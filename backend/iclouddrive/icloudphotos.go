@@ -133,6 +133,12 @@ func (f *PhotosFs) photosService(ctx context.Context) (*api.PhotosService, error
 	if f.photos == nil {
 		var err error
 		f.photos, err = api.NewPhotosService(ctx, f.icloud, f.pacer, shouldRetry)
+		if err == nil {
+			f.photos.SetNameOptions(api.NameOptions{
+				StripOriginalSuffix: f.opt.PhotosStripOriginalSuffix,
+				LowercaseExtension:  f.opt.PhotosLowercaseExtension,
+			})
+		}
 		if err != nil {
 			return nil, err
 		}

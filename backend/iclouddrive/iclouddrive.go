@@ -55,6 +55,9 @@ type Options struct {
 	Cookies    string               `config:"cookies"`
 	ClientID   string               `config:"client_id"`
 	Enc        encoder.MultiEncoder `config:"encoding"`
+
+	PhotosStripOriginalSuffix bool `config:"photos_strip_original_suffix"`
+	PhotosLowercaseExtension  bool `config:"photos_lowercase_extension"`
 }
 
 // Fs represents a remote icloud drive

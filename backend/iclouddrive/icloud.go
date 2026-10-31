@@ -243,6 +243,21 @@ func init() {
 			Advanced: true,
 			Default:  "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d",
 		}, {
+			Name: "photos_strip_original_suffix",
+			Help: `Remove "_Original" from the end of Photos file names.
+
+For example "IMG_1234_Original.HEIC" is listed as "IMG_1234.HEIC". Its
+Live Photo video and edited version lose the suffix too.`,
+			Default:  true,
+			Advanced: true,
+		}, {
+			Name: "photos_lowercase_extension",
+			Help: `List Photos file extensions in lower case.
+
+For example "IMG_1234.PNG" is listed as "IMG_1234.png".`,
+			Default:  true,
+			Advanced: true,
+		}, {
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
 			Advanced: true,

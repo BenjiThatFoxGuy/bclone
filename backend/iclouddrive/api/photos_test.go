@@ -1524,3 +1524,42 @@ func TestDeleteAssetBackoffDoesNotBlockOthers(t *testing.T) {
 	cancel()
 	<-done
 }
+
+func TestNameOptionsApply(t *testing.T) {
+	both := NameOptions{StripOriginalSuffix: true, LowercaseExtension: true}
+	for _, tc := range []struct {
+		opts NameOptions
+		in   string
+		want string
+	}{
+		{both, "VRChat_2024-05-29_20-46-20.256_3840x2160_Original.PNG", "VRChat_2024-05-29_20-46-20.256_3840x2160.png"},
+		{both, "IMG_0001_original.HEIC", "IMG_0001.heic"},
+		{both, "IMG_0001_Original-edited.JPG", "IMG_0001-edited.jpg"},
+		{both, "IMG_0001_Original-alt.DNG", "IMG_0001-alt.dng"},
+		{both, "IMG_0001_Original.MOV", "IMG_0001.mov"},
+		{both, "_Original.PNG", "_Original.png"},
+		{both, "Original_IMG.PNG", "Original_IMG.png"},
+		{both, "IMG_Originals.PNG", "IMG_Originals.png"},
+		{both, "noext_Original", "noext"},
+		{NameOptions{StripOriginalSuffix: true}, "A_Original.PNG", "A.PNG"},
+		{NameOptions{LowercaseExtension: true}, "A_Original.PNG", "A_Original.png"},
+		{NameOptions{}, "A_Original.PNG", "A_Original.PNG"},
+	} {
+		assert.Equal(t, tc.want, tc.opts.apply(tc.in), "%+v %q", tc.opts, tc.in)
+	}
+}
+
+func TestPresentFilenamesThenDeduplicates(t *testing.T) {
+	ps := NewTestPhotosService(nil)
+	ps.SetNameOptions(NameOptions{StripOriginalSuffix: true, LowercaseExtension: true})
+	album := &Album{Name: "All Photos", lib: &Library{service: ps}}
+	photos := []*Photo{
+		{ID: "a", Filename: "Shot_Original.PNG"},
+		{ID: "b", Filename: "Shot.png"},
+		{ID: "c", Filename: "Other_Original.PNG"},
+	}
+	album.presentFilenames(photos)
+	assert.Equal(t, "Shot_a.png", photos[0].Filename)
+	assert.Equal(t, "Shot_b.png", photos[1].Filename)
+	assert.Equal(t, "Other.png", photos[2].Filename)
+}

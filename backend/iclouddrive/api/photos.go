@@ -162,6 +162,59 @@ type PhotosService struct {
 	libraries   map[string]*Library
 	deleteMu    sync.Mutex // serializes deletes, protects lastDelete
 	lastDelete  time.Time  // when the last delete request finished
+	names       NameOptions
+}
+
+// NameOptions controls how iCloud filenames are presented
+type NameOptions struct {
+	StripOriginalSuffix bool // "IMG_Original.HEIC" -> "IMG.HEIC"
+	LowercaseExtension  bool // "IMG.PNG" -> "IMG.png"
+}
+
+// SetNameOptions sets how filenames are presented. Call it before listing.
+func (ps *PhotosService) SetNameOptions(names NameOptions) {
+	ps.names = names
+}
+
+// originalSuffix is what StripOriginalSuffix removes, optionally followed by
+// the markers buildPhotos gives edited versions and RAW alternatives
+const originalSuffix = "_Original"
+
+// apply returns name as presented under these options
+func (n NameOptions) apply(name string) string {
+	ext := path.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	if n.StripOriginalSuffix {
+		for _, marker := range []string{"", "-edited", "-alt"} {
+			stem, ok := strings.CutSuffix(base, marker)
+			if !ok || len(stem) <= len(originalSuffix) {
+				continue
+			}
+			if cut := len(stem) - len(originalSuffix); strings.EqualFold(stem[cut:], originalSuffix) {
+				base = stem[:cut] + marker
+				break
+			}
+		}
+	}
+	if n.LowercaseExtension {
+		ext = strings.ToLower(ext)
+	}
+	return base + ext
+}
+
+// presentFilenames applies the naming options and then makes the names in
+// one album unique. Disk caches keep the names as iCloud gives them, so this
+// runs every time photos are loaded.
+func (album *Album) presentFilenames(photos []*Photo) {
+	if album.lib != nil {
+		names := album.lib.service.names
+		if names != (NameOptions{}) {
+			for _, p := range photos {
+				p.Filename = names.apply(p.Filename)
+			}
+		}
+	}
+	deduplicateFilenames(photos)
 }
 
 type libraryDiscovery struct {
@@ -1450,7 +1503,7 @@ func (lib *Library) applyPendingDelta(ctx context.Context) bool {
 				cp := *p
 				deduped[i] = &cp
 			}
-			deduplicateFilenames(deduped)
+			album.presentFilenames(deduped)
 			album.photoCache = buildPhotoCache(deduped)
 		}
 		album.mu.Unlock()
@@ -2153,7 +2206,7 @@ func (album *Album) GetPhotos(ctx context.Context) ([]*Photo, error) {
 			album.mu.Unlock()
 			// Fall back to disk cache
 			if cached, ok := album.loadDiskCacheFrom(album.lib.zoneCacheDir()); ok {
-				deduplicateFilenames(cached)
+				album.presentFilenames(cached)
 				album.mu.Lock()
 				album.photoCache = buildPhotoCache(cached)
 				album.mu.Unlock()
@@ -2177,7 +2230,7 @@ func (album *Album) GetPhotos(ctx context.Context) ([]*Photo, error) {
 	// Persist original filenames for delta sync (dedup is applied on read)
 	album.saveDiskCache(photos)
 
-	deduplicateFilenames(photos)
+	album.presentFilenames(photos)
 
 	// Populate filename cache for NewObject lookups
 	album.mu.Lock()
