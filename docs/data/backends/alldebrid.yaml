@@ -1,0 +1,16 @@
+backend: alldebrid
+name: Alldebrid
+tier: Tier 4
+maintainers: External
+features_score: 0
+integration_tests: Untested
+data_integrity: Other
+performance: Medium
+adoption: Some use
+docs: Partial
+security: Medium
+virtual: false
+remote: 'TestAlldebrid:'
+features: null
+hashes: null
+precision: null
