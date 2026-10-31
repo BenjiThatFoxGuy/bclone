@@ -4,7 +4,7 @@ description: "SFTP"
 versionIntroduced: "v1.36"
 ---
 
-# {{< icon "fa fa-server" >}} SFTP
+# SFTP
 
 SFTP is the [Secure (or SSH) File Transfer
 Protocol](https://en.wikipedia.org/wiki/SSH_File_Transfer_Protocol).
@@ -42,7 +42,7 @@ the server, see [shell access considerations](#shell-access-considerations).
 
 Here is an example of making an SFTP configuration.  First run
 
-```sh
+```console
 rclone config
 ```
 
@@ -100,39 +100,39 @@ This remote is called `remote` and can now be used like this:
 
 See all directories in the home directory
 
-```sh
+```console
 rclone lsd remote:
 ```
 
 See all directories in the root directory
 
-```sh
+```console
 rclone lsd remote:/
 ```
 
 Make a new directory
 
-```sh
+```console
 rclone mkdir remote:path/to/directory
 ```
 
 List the contents of a directory
 
-```sh
+```console
 rclone ls remote:path/to/directory
 ```
 
 Sync `/home/local/directory` to the remote directory, deleting any
 excess files in the directory.
 
-```sh
+```console
 rclone sync --interactive /home/local/directory remote:directory
 ```
 
 Mount the remote path `/srv/www-data/` to the local path
 `/mnt/www-data`
 
-```sh
+```console
 rclone mount remote:/srv/www-data/ /mnt/www-data
 ```
 
@@ -158,7 +158,7 @@ key_pem = -----BEGIN RSA PRIVATE KEY-----\nMaMbaIXtE\n0gAMbMbaSsd\nMbaass\n-----
 
 This will generate it correctly for key_pem for use in the config:
 
-```sh
+```console
 awk '{printf "%s\\n", $0}' < ~/.ssh/id_rsa
 ```
 
@@ -202,21 +202,33 @@ merged file in both places.
 
 Note: the cert must come first in the file.  e.g.
 
-```sh
+```console
 cat id_rsa-cert.pub id_rsa > merged_key
 ```
 
 ### Host key validation
 
-By default rclone will not check the server's host key for validation.  This
-can allow an attacker to replace a server with their own and if you use
-password authentication then this can lead to that password being exposed.
+By default rclone will not check the server's host key for validation.
+This can allow an attacker to replace a server with their own and if
+you use password authentication then this can lead to that password
+being exposed. Rclone will produce a warning `No host key validation
+is being performed` each time the backend is started in this mode.
 
-Host key matching, using standard `known_hosts` files can be turned on by
-enabling the `known_hosts_file` option.  This can point to the file maintained
-by `OpenSSH` or can point to a unique file.
+Host key matching, using standard ssh `known_hosts` files can be
+turned on by enabling the `known_hosts_file` option. This can point to
+the file maintained by `OpenSSH` or can point to a unique file. To
+explicitly disable host key checking and silence the warning, the
+`known_hosts_file` option can be set to `none`.
 
-e.g. using the OpenSSH `known_hosts` file:
+Alternatively rclone can maintain server host keys in a `host_keys`
+setting in the config file. This can be updated automatically with
+`--sftp-pin-host-key`.
+
+These options are described below
+
+### Using the OpenSSH known_hosts file
+
+Using the OpenSSH `known_hosts` file looks like this:
 
 ```ini
 [remote]
@@ -229,7 +241,7 @@ known_hosts_file = ~/.ssh/known_hosts
 
 Alternatively you can create your own known hosts file like this:
 
-```sh
+```console
 ssh-keyscan -t dsa,rsa,ecdsa,ed25519 example.com >> known_hosts
 ```
 
@@ -266,19 +278,117 @@ and you will need to add the appropriate `@cert-authority` entry.
 The `known_hosts_file` setting can be set during `rclone config` as an
 advanced option.
 
+### Host key pinning
+
+As an alternative to maintaining a `known_hosts` file, rclone supports
+Trust On First Use (TOFU) host key pinning via the `--sftp-pin-host-key`
+command-line flag.
+
+The recommended workflow is:
+
+1. For the very first connection to a new remote, run rclone once with
+   `--sftp-pin-host-key`. Rclone records the server's host key into the
+   remote's `host_keys` config option and logs the SHA256 fingerprint:
+
+   ```console
+   $ rclone --sftp-pin-host-key lsd remote:
+   2026/01/01 12:00:00 NOTICE: sftp://sftpuser@example.com:22/: Accepted ssh-ed25519 host key SHA256:abc... for example.com:22 on first use
+   2026/01/01 12:00:00 NOTICE: sftp://sftpuser@example.com:22/: Pinned ssh-ed25519 host key SHA256:abc... for example.com:22 in config
+   ```
+
+2. For every subsequent run, omit the flag. Rclone consults the pinned
+   `host_keys` and refuses the connection on any mismatch.
+
+This is a strict improvement over the default of no host key validation,
+but note that the first connection itself is unauthenticated. Rclone
+detects later key changes, not a man-in-the-middle who is already on-path
+the first time you connect. Ideally do the first connection over a trusted
+network or cross-check the fingerprint rclone logs against one provided out
+of band by the server operator.
+
+If `known_hosts_file` is also set it takes precedence and
+`--sftp-pin-host-key` is ignored.
+
+After the first successful connection the config will contain a new line:
+
+```ini
+[remote]
+type = sftp
+host = example.com
+user = sftpuser
+pass = 
+host_keys = ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
+```
+
+The `host_keys` field is always validated against the offered host key
+when non-empty, so you can also pin a known key by hand without ever
+running with the flag. Each entry is the complete public key - the
+algorithm and base64 fields of a known_hosts line - not its SHA256
+fingerprint:
+
+```console
+rclone config update remote host_keys "ssh-ed25519 AAAAC3..."
+```
+
+Setting `pin_host_key = true` persistently in the config file is not
+recommended: while it is set, rclone will accept any new host key algorithm
+the server later presents, widening the trust surface beyond the initial
+pin. Using `--sftp-pin-host-key` as a one-shot flag keeps each
+unauthenticated trust event a deliberate decision.
+
+#### Re-pinning after a legitimate key change
+
+If the server's host key is legitimately rotated, rclone will refuse the
+connection with an error containing both the stored and offered SHA256
+fingerprints. To accept the new key, clear the stored value and re-run once
+with the flag:
+
+```console
+rclone config update remote host_keys ""
+rclone --sftp-pin-host-key lsd remote:
+```
+
+Alternatively edit `host_keys` directly to replace or add the new entry.
+Multiple entries (separated by commas) are supported.
+
+#### Limitations
+
+- If the server uses an `@cert-authority`-signed host certificate,
+  host key pinning cannot validate it (the certificate is re-issued
+  periodically even though the underlying CA is unchanged). Use
+  `known_hosts_file` with an `@cert-authority` entry instead.
+- On-the-fly remotes (`:sftp,host=...:`) cannot persist the pinned key -
+  rclone will log a warning and re-accept the server key on every run,
+  so the flag only provides first-connect fingerprint logging. Named
+  remotes used with connection string overrides (`remote,port=2022:`)
+  are fine: the pinned key is saved to the remote's config section.
+- If the `ssh` option is set, the configured ssh program makes the
+  connection and does its own host key validation, so `host_keys` is
+  not consulted and `--sftp-pin-host-key` pins nothing.
+- Load-balanced SFTP endpoints that present a different host key per
+  backend node will produce a mismatch when a later connection lands on
+  a different node. Re-run with `--sftp-pin-host-key` after clearing
+  `host_keys`, or repeat the first-connect step until each node's key
+  has been observed, appending the additional entries to `host_keys` by
+  hand (comma-separated).
+- rclone does not yet support OpenSSH's `hostkeys@openssh.com` extension,
+  the non-RFC mechanism that helps clients learn additional host keys
+  during rotation. This is being tracked upstream at
+  https://github.com/golang/go/issues/37245
+
 ### ssh-agent on macOS
 
 Note that there seem to be various problems with using an ssh-agent on
 macOS due to recent changes in the OS.  The most effective work-around
 seems to be to start an ssh-agent in each session, e.g.
 
-```sh
+```console
 eval `ssh-agent -s` && ssh-add -A
 ```
 
 And then at the end of the session
 
-```sh
+```console
 eval `ssh-agent -k`
 ```
 
@@ -332,7 +442,7 @@ correct, and support all features.
 The shell type auto-detection logic, described above, means that
 by default rclone will try to run a shell command the first time
 a new sftp remote is accessed. If you configure a sftp remote
-without a config file, e.g. an [on the fly](/docs/#backend-path-to-dir])
+without a config file, e.g. an [on the fly](/docs/#backend-path-to-dir)
 remote, rclone will have nowhere to store the result, and it
 will re-run the command on every access. To avoid this you should
 explicitly set the `shell_type` option to the correct value,
@@ -412,6 +522,24 @@ upload (for example, certain configurations of ProFTPd with mod_sftp). If you
 are using one of these servers, you can set the option `set_modtime = false` in
 your RClone backend configuration to disable this behaviour.
 
+### Restricted filename characters
+
+SFTP servers on Unix-like systems can store any character in a file name
+except NUL and `/`, so by default only these are replaced:
+
+| Character | Value | Replacement |
+| --------- |:-----:|:-----------:|
+| NUL       | 0x00  | ␀           |
+| /         | 0x2F  | ／           |
+
+If the server runs on Windows, which can't store many more characters,
+add the Windows restricted characters with `--sftp-encoding`, as in the
+[FTP example](/overview/#encoding-example-ftp):
+
+```text
+--sftp-encoding "Slash,LtGt,DoubleQuote,Colon,Question,Asterisk,Pipe,BackSlash,Ctl,RightSpace,RightPeriod,InvalidUtf8,Dot"
+```
+
 ### About command
 
 The `about` command returns the total space, free space, and used
@@ -428,7 +556,7 @@ with a Windows OpenSSH server, rclone will use a built-in shell command
 (see [shell access](#shell-access)). If none of the above is applicable,
 `about` will fail.
 
-{{< rem autogenerated options start" - DO NOT EDIT - instead edit fs.RegInfo in backend/sftp/sftp.go then run make backenddocs" >}}
+<!-- autogenerated options start - DO NOT EDIT - instead edit fs.RegInfo in backend/sftp/sftp.go and run make backenddocs to verify --> <!-- markdownlint-disable-line line-length -->
 ### Standard options
 
 Here are the Standard options specific to sftp (SSH/SFTP).
@@ -601,10 +729,10 @@ Properties:
 - Type:        bool
 - Default:     false
 - Examples:
-    - "false"
-        - Use default Cipher list.
-    - "true"
-        - Enables the use of the aes128-cbc cipher and diffie-hellman-group-exchange-sha256, diffie-hellman-group-exchange-sha1 key exchange.
+  - "false"
+    - Use default Cipher list.
+  - "true"
+    - Enables the use of the aes128-cbc cipher and diffie-hellman-group-exchange-sha256, diffie-hellman-group-exchange-sha1 key exchange.
 
 #### --sftp-disable-hashcheck
 
@@ -663,7 +791,7 @@ Here are the Advanced options specific to sftp (SSH/SFTP).
 
 Optional path to known_hosts file.
 
-Set this value to enable server host key validation.
+Set this value to enable server host key validation. Set to `none` to silence the "No host key validation" notice.
 
 Leading `~` will be expanded in the file name as will environment variables such as `${RCLONE_CONFIG_DIR}`.
 
@@ -674,8 +802,62 @@ Properties:
 - Type:        string
 - Required:    false
 - Examples:
-    - "~/.ssh/known_hosts"
-        - Use OpenSSH's known_hosts file.
+  - "~/.ssh/known_hosts"
+    - Use OpenSSH's known_hosts file.
+
+#### --sftp-pin-host-key
+
+Pin the server host key on first connection (Trust On First Use).
+
+Intended for one-time use as the `--sftp-pin-host-key` command-line
+flag. Run rclone once with the flag and the server's host key will be
+recorded into the host_keys config option. On subsequent runs (without
+the flag) host_keys is consulted and any mismatch is refused.
+
+Setting this option persistently in the config file is not
+recommended. While it is set, rclone will also accept any new
+host key algorithm the server later presents, which widens the trust
+surface beyond the initial pin. To pin a new key after a legitimate
+key change, re-run with the flag.
+
+The first connection is unauthenticated, so ideally do it over a
+trusted network or cross-check the fingerprint rclone logs against
+one provided out of band.
+
+If known_hosts_file is also set, that takes precedence and this option
+is ignored.
+
+Properties:
+
+- Config:      pin_host_key
+- Env Var:     RCLONE_SFTP_PIN_HOST_KEY
+- Type:        bool
+- Default:     false
+
+#### --sftp-host-keys
+
+Pinned host keys for this remote, used to verify the server.
+
+Comma-separated list of "algo base64-key" entries (the same format as
+the second and third fields of an OpenSSH known_hosts line). Usually
+populated automatically by running once with --sftp-pin-host-key, but
+can be set by hand to pin a server's public key obtained out of band.
+Note that each entry is the complete public key, not its SHA256
+fingerprint.
+
+When non-empty, the offered host key must match one of the entries or
+the connection is refused. To re-pin after a legitimate key change,
+clear this option and reconnect with --sftp-pin-host-key, or edit the
+value directly.
+
+At most 16 entries may be pinned.
+
+Properties:
+
+- Config:      host_keys
+- Env Var:     RCLONE_SFTP_HOST_KEYS
+- Type:        CommaSepList
+- Default:     
 
 #### --sftp-ask-password
 
@@ -727,6 +909,19 @@ Properties:
 - Type:        string
 - Required:    false
 
+#### --sftp-encoding
+
+The encoding for the backend.
+
+See the [encoding section in the overview](/overview/#encoding) for more info.
+
+Properties:
+
+- Config:      encoding
+- Env Var:     RCLONE_SFTP_ENCODING
+- Type:        Encoding
+- Default:     Slash,Del,Ctl,Dot
+
 #### --sftp-set-modtime
 
 Set the modified time on the remote if set.
@@ -751,14 +946,14 @@ Properties:
 - Type:        string
 - Required:    false
 - Examples:
-    - "none"
-        - No shell access
-    - "unix"
-        - Unix shell
-    - "powershell"
-        - PowerShell
-    - "cmd"
-        - Windows Command Prompt
+  - "none"
+    - No shell access
+  - "unix"
+    - Unix shell
+  - "powershell"
+    - PowerShell
+  - "cmd"
+    - Windows Command Prompt
 
 #### --sftp-hashes
 
@@ -865,6 +1060,12 @@ Properties:
 #### --sftp-skip-links
 
 Set to skip any symlinks and any other non regular files.
+
+This only affects listing: symlinks and other non regular files are
+omitted from directory listings. It is not a security control and does
+not prevent writes from following symlinks on the server - confining an
+SFTP account to a directory must be enforced server side (for example
+with a chroot jail or restricted permissions).
 
 Properties:
 
@@ -1186,6 +1387,12 @@ URL for HTTP CONNECT proxy
 
 Set this to a URL for an HTTP proxy which supports the HTTP CONNECT verb.
 
+Supports the format http://user:pass@host:port, http://host:port, http://host.
+
+Example:
+
+    http://myUser:myPass@proxyhostname.example.com:8000
+
 
 Properties:
 
@@ -1231,14 +1438,14 @@ Properties:
 - Type:        string
 - Required:    false
 
-{{< rem autogenerated options stop >}}
+<!-- autogenerated options stop -->
 
 ## Limitations
 
 On some SFTP servers (e.g. Synology) the paths are different
 for SSH and SFTP so the hashes can't be calculated properly.
-You can either use [`--sftp-path-override`](#--sftp-path-override)
-or [`disable_hashcheck`](#--sftp-disable-hashcheck).
+You can either use [`--sftp-path-override`](#sftp-path-override)
+or [`disable_hashcheck`](#sftp-disable-hashcheck).
 
 The only ssh agent supported under Windows is Putty's pageant.
 
@@ -1247,13 +1454,13 @@ default, due to security concerns. This can be re-enabled on a
 per-connection basis by setting the `use_insecure_cipher` setting in
 the configuration file to `true`. Further details on the insecurity of
 this cipher can be found
-[in this paper](http://www.isg.rhul.ac.uk/~kp/SandPfinal.pdf).
+[in this paper](https://conferences.computer.org/sp/pdfs/sp/2009/oakland2009-01.pdf).
 
 SFTP isn't supported under plan9 until [this
 issue](https://github.com/pkg/sftp/issues/156) is fixed.
 
 Note that since SFTP isn't HTTP based the following flags don't work
-with it: `--dump-headers`, `--dump-bodies`, `--dump-auth`.
+with it: `--dump headers`, `--dump bodies`, `--dump auth`.
 
 Note that `--timeout` and `--contimeout` are both supported.
 

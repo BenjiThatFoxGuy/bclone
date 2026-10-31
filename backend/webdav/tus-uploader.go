@@ -20,14 +20,7 @@ type Uploader struct {
 	upload              *Upload
 	offset              int64
 	aborted             bool
-	uploadSubs          []chan Upload
-	notifyChan          chan bool
 	overridePatchMethod bool
-}
-
-// NotifyUploadProgress subscribes to progress updates.
-func (u *Uploader) NotifyUploadProgress(c chan Upload) {
-	u.uploadSubs = append(u.uploadSubs, c)
 }
 
 func (f *Fs) shouldRetryChunk(ctx context.Context, resp *http.Response, err error, newOff *int64) (bool, error) {
@@ -136,7 +129,7 @@ func (u *Uploader) UploadChunk(ctx context.Context, cnt int, options ...fs.OpenO
 	size, err := u.upload.stream.Read(data)
 
 	if err != nil {
-		fs.Errorf(u.fs, "Chunk %d: Error: Can not read from data strem: %v", cnt, err)
+		fs.Errorf(u.fs, "Chunk %d: Error: Can not read from data stream: %v", cnt, err)
 		return err
 	}
 
@@ -156,36 +149,15 @@ func (u *Uploader) UploadChunk(ctx context.Context, cnt int, options ...fs.OpenO
 
 	u.upload.updateProgress(u.offset)
 
-	u.notifyChan <- true
-
 	return nil
-}
-
-// Waits for a signal to broadcast to all subscribers
-func (u *Uploader) broadcastProgress() {
-	for range u.notifyChan {
-		for _, c := range u.uploadSubs {
-			c <- *u.upload
-		}
-	}
 }
 
 // NewUploader creates a new Uploader.
 func NewUploader(f *Fs, url string, upload *Upload, offset int64) *Uploader {
-	notifyChan := make(chan bool)
-
-	uploader := &Uploader{
-		f,
-		url,
-		upload,
-		offset,
-		false,
-		nil,
-		notifyChan,
-		false,
+	return &Uploader{
+		fs:     f,
+		url:    url,
+		upload: upload,
+		offset: offset,
 	}
-
-	go uploader.broadcastProgress()
-
-	return uploader
 }

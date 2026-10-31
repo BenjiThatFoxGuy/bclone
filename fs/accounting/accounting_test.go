@@ -3,6 +3,7 @@
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -100,7 +101,7 @@ func TestAccountRead(t *testing.T) {
 
 	assert.True(t, acc.values.start.IsZero())
 	acc.values.mu.Lock()
-	assert.Equal(t, 0, acc.values.lpBytes)
+	assert.Equal(t, int64(0), acc.values.lpBytes)
 	assert.Equal(t, int64(0), acc.values.bytes)
 	acc.values.mu.Unlock()
 	assert.Equal(t, int64(0), stats.bytes)
@@ -113,7 +114,7 @@ func TestAccountRead(t *testing.T) {
 
 	assert.False(t, acc.values.start.IsZero())
 	acc.values.mu.Lock()
-	assert.Equal(t, 2, acc.values.lpBytes)
+	assert.Equal(t, int64(2), acc.values.lpBytes)
 	assert.Equal(t, int64(2), acc.values.bytes)
 	acc.values.mu.Unlock()
 	assert.Equal(t, int64(2), stats.bytes)
@@ -145,7 +146,7 @@ func testAccountWriteTo(t *testing.T, withBuffer bool) {
 
 	assert.True(t, acc.values.start.IsZero())
 	acc.values.mu.Lock()
-	assert.Equal(t, 0, acc.values.lpBytes)
+	assert.Equal(t, int64(0), acc.values.lpBytes)
 	assert.Equal(t, int64(0), acc.values.bytes)
 	acc.values.mu.Unlock()
 	assert.Equal(t, int64(0), stats.bytes)
@@ -159,7 +160,7 @@ func testAccountWriteTo(t *testing.T, withBuffer bool) {
 
 	assert.False(t, acc.values.start.IsZero())
 	acc.values.mu.Lock()
-	assert.Equal(t, len(buf), acc.values.lpBytes)
+	assert.Equal(t, int64(len(buf)), acc.values.lpBytes)
 	assert.Equal(t, int64(len(buf)), acc.values.bytes)
 	acc.values.mu.Unlock()
 	assert.Equal(t, int64(len(buf)), stats.bytes)
@@ -183,14 +184,14 @@ func TestAccountString(t *testing.T) {
 
 	// FIXME not an exhaustive test!
 
-	assert.Equal(t, "test:  0% /3, 0/s, -", strings.TrimSpace(acc.String()))
+	assert.Equal(t, "test:  0% / 3 B, 0 B/s, -", strings.TrimSpace(acc.String()))
 
 	var buf = make([]byte, 2)
 	n, err := acc.Read(buf)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, n)
 
-	assert.Equal(t, "test: 66% /3, 0/s, -", strings.TrimSpace(acc.String()))
+	assert.Equal(t, "test: 66% / 3 B, 0 B/s, -", strings.TrimSpace(acc.String()))
 
 	assert.NoError(t, acc.Close())
 }
@@ -253,6 +254,35 @@ func TestAccountAccounter(t *testing.T) {
 	assert.True(t, unwrapped == in2)
 	assert.True(t, wrap(in3) == in3)
 
+}
+
+func TestAccountServerSideEnd(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		end  func(acc *Account, n int64)
+	}{
+		{"Copy", (*Account).ServerSideCopyEnd},
+		{"Move", (*Account).ServerSideMoveEnd},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			stats := NewStats(ctx)
+			tr := stats.NewTransferRemoteSize("file", 100, nil, nil)
+			acc := tr.Account(ctx, nil)
+			acc.ServerSideTransferStart()
+			test.end(acc, 100)
+
+			bytes, size := acc.progress()
+			assert.Equal(t, int64(100), bytes)
+			assert.Equal(t, int64(100), size)
+			assert.Equal(t, int64(100), stats.GetBytes())
+			// Counted once while the transfer is still in progress
+			assert.Equal(t, int64(100), stats.calculateTransferStats().totalBytes)
+
+			tr.Done(ctx, nil)
+			assert.Equal(t, int64(100), stats.calculateTransferStats().totalBytes)
+		})
+	}
 }
 
 func TestAccountMaxTransfer(t *testing.T) {
@@ -320,6 +350,8 @@ func TestAccountMaxTransferWriteTo(t *testing.T) {
 	n, err := acc.WriteTo(&b)
 	assert.Equal(t, int64(15), n)
 	assert.Equal(t, ErrorMaxTransferLimitReachedFatal, err)
+	// Nothing past the limit must reach the writer
+	assert.Equal(t, 15, b.Len())
 }
 
 func TestAccountReadCtx(t *testing.T) {
@@ -383,4 +415,255 @@ func TestShortenName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Test readers for WithSeeker/WithReaderAt tests
+type testSeeker struct {
+	*bytes.Buffer
+}
+
+func newTestSeeker(data []byte) *testSeeker {
+	return &testSeeker{bytes.NewBuffer(data)}
+}
+
+func (ts *testSeeker) Close() error { return nil }
+
+func (ts *testSeeker) Seek(offset int64, whence int) (int64, error) {
+	// Simple implementation for testing
+	switch whence {
+	case io.SeekStart:
+		ts.Buffer = bytes.NewBuffer(ts.Buffer.Bytes()[offset:])
+		return offset, nil
+	default:
+		return 0, fmt.Errorf("seek whence %d not implemented", whence)
+	}
+}
+
+type testReadAtSeeker struct {
+	*bytes.Reader
+}
+
+func newTestReadAtSeeker(data []byte) *testReadAtSeeker {
+	return &testReadAtSeeker{bytes.NewReader(data)}
+}
+
+func (tras *testReadAtSeeker) Close() error { return nil }
+
+type testReaderAt struct {
+	data []byte
+	pos  int
+}
+
+func newTestReaderAt(data []byte) *testReaderAt {
+	return &testReaderAt{data: data}
+}
+
+func (tra *testReaderAt) Close() error { return nil }
+
+func (tra *testReaderAt) Read(p []byte) (n int, err error) {
+	if tra.pos >= len(tra.data) {
+		return 0, io.EOF
+	}
+	n = copy(p, tra.data[tra.pos:])
+	tra.pos += n
+	if tra.pos >= len(tra.data) {
+		err = io.EOF
+	}
+	return n, err
+}
+
+func (tra *testReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
+	if off < 0 || off >= int64(len(tra.data)) {
+		return 0, io.EOF
+	}
+	n = copy(p, tra.data[off:])
+	if n < len(p) {
+		err = io.EOF
+	}
+	return n, err
+}
+
+type testNoSeekNoReadAt struct {
+	*bytes.Buffer
+}
+
+func newTestNoSeekNoReadAt(data []byte) *testNoSeekNoReadAt {
+	return &testNoSeekNoReadAt{bytes.NewBuffer(data)}
+}
+
+func (tns *testNoSeekNoReadAt) Close() error { return nil }
+
+func TestAccountWithSeeker(t *testing.T) {
+	ctx := context.Background()
+	testData := []byte{1, 2, 3, 4, 5}
+
+	t.Run("Success", func(t *testing.T) {
+		in := newTestSeeker(testData)
+		stats := NewStats(ctx)
+		acc := newAccountSizeName(ctx, stats, in, int64(len(testData)), "test")
+
+		seeker, err := acc.WithSeeker()
+		assert.NoError(t, err)
+
+		// Test that it implements the expected interfaces
+		var _ io.Reader = seeker
+		var _ io.Seeker = seeker
+
+		// Test seeking functionality
+		offset, err := seeker.Seek(2, io.SeekStart)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(2), offset)
+
+		// Test reading after seek
+		buf := make([]byte, 2)
+		n, err := seeker.Read(buf)
+		assert.NoError(t, err)
+		assert.Equal(t, 2, n)
+		assert.Equal(t, []byte{3, 4}, buf)
+
+		assert.NoError(t, acc.Close())
+	})
+
+	t.Run("NoSeeker", func(t *testing.T) {
+		in := newTestNoSeekNoReadAt(testData)
+		stats := NewStats(ctx)
+		acc := newAccountSizeName(ctx, stats, in, int64(len(testData)), "test")
+
+		_, err := acc.WithSeeker()
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, errors.ErrUnsupported)
+		assert.Contains(t, err.Error(), "Seek not implemented for")
+
+		assert.NoError(t, acc.Close())
+	})
+}
+
+func TestAccountWithReaderAt(t *testing.T) {
+	ctx := context.Background()
+	testData := []byte{1, 2, 3, 4, 5}
+
+	t.Run("Success", func(t *testing.T) {
+		in := newTestReaderAt(testData)
+		stats := NewStats(ctx)
+		acc := newAccountSizeName(ctx, stats, in, int64(len(testData)), "test")
+
+		readerAt, err := acc.WithReaderAt()
+		assert.NoError(t, err)
+
+		// Test that it implements the expected interfaces
+		var _ io.Reader = readerAt
+		var _ io.ReaderAt = readerAt
+
+		// Test ReadAt functionality
+		buf := make([]byte, 2)
+		n, err := readerAt.ReadAt(buf, 2)
+		assert.NoError(t, err)
+		assert.Equal(t, 2, n)
+		assert.Equal(t, []byte{3, 4}, buf)
+
+		// Test that accounting is updated
+		acc.values.mu.Lock()
+		bytes := acc.values.bytes
+		acc.values.mu.Unlock()
+		assert.Equal(t, int64(2), bytes)
+
+		assert.NoError(t, acc.Close())
+	})
+
+	t.Run("NoReaderAt", func(t *testing.T) {
+		in := newTestNoSeekNoReadAt(testData)
+		stats := NewStats(ctx)
+		acc := newAccountSizeName(ctx, stats, in, int64(len(testData)), "test")
+
+		_, err := acc.WithReaderAt()
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, errors.ErrUnsupported)
+		assert.Contains(t, err.Error(), "ReadAt not implemented for")
+
+		assert.NoError(t, acc.Close())
+	})
+}
+
+func TestAccountWithReadAtSeeker(t *testing.T) {
+	ctx := context.Background()
+	testData := []byte{1, 2, 3, 4, 5}
+
+	t.Run("Success", func(t *testing.T) {
+		// Use testReadAtSeeker which implements ReadAt, Seek, and Close
+		in := newTestReadAtSeeker(testData)
+		stats := NewStats(ctx)
+		acc := newAccountSizeName(ctx, stats, in, int64(len(testData)), "test")
+
+		readAtSeeker, err := acc.WithReadAtSeeker()
+		assert.NoError(t, err)
+
+		// Test that it implements the expected interfaces
+		var _ io.Reader = readAtSeeker
+		var _ io.ReaderAt = readAtSeeker
+		var _ io.Seeker = readAtSeeker
+
+		// Test ReadAt functionality
+		buf := make([]byte, 2)
+		n, err := readAtSeeker.ReadAt(buf, 2)
+		assert.NoError(t, err)
+		assert.Equal(t, 2, n)
+		assert.Equal(t, []byte{3, 4}, buf)
+
+		// Test Seek functionality
+		offset, err := readAtSeeker.Seek(1, io.SeekStart)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(1), offset)
+
+		// Test regular Read after seek
+		n, err = readAtSeeker.Read(buf)
+		assert.NoError(t, err)
+		assert.Equal(t, 2, n)
+		assert.Equal(t, []byte{2, 3}, buf)
+
+		assert.NoError(t, acc.Close())
+	})
+
+	t.Run("NoReadAt", func(t *testing.T) {
+		in := newTestSeeker(testData) // Has Seek but not ReadAt
+		stats := NewStats(ctx)
+		acc := newAccountSizeName(ctx, stats, in, int64(len(testData)), "test")
+
+		_, err := acc.WithReadAtSeeker()
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, errors.ErrUnsupported)
+
+		assert.NoError(t, acc.Close())
+	})
+
+	t.Run("NoSeeker", func(t *testing.T) {
+		// Create a reader that has ReadAt but not Seek interface
+		in := &struct {
+			io.ReadCloser
+			io.ReaderAt
+		}{
+			ReadCloser: io.NopCloser(bytes.NewReader(testData)),
+			ReaderAt:   bytes.NewReader(testData),
+		}
+
+		stats := NewStats(ctx)
+		acc := newAccountSizeName(ctx, stats, in, int64(len(testData)), "test")
+
+		_, err := acc.WithReadAtSeeker()
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, errors.ErrUnsupported)
+
+		assert.NoError(t, acc.Close())
+	})
+
+	t.Run("NoSeekOrReadAt", func(t *testing.T) {
+		in := newTestNoSeekNoReadAt(testData)
+		stats := NewStats(ctx)
+		acc := newAccountSizeName(ctx, stats, in, int64(len(testData)), "test")
+
+		_, err := acc.WithReadAtSeeker()
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, errors.ErrUnsupported)
+
+		assert.NoError(t, acc.Close())
+	})
 }

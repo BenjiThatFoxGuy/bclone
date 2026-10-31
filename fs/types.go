@@ -328,7 +328,7 @@ type Flagger interface {
 // satisfy as non-pointers
 //
 // These are from pflag.Value and need to be tested against
-// non-pointer value due the the way the backend flags are inserted
+// non-pointer value due to the way the backend flags are inserted
 // into the flags.
 type FlaggerNP interface {
 	String() string
@@ -340,7 +340,8 @@ func NewUsageValue[T interface {
 	int64 | uint64 | float64
 }](value T) *int64 {
 	p := new(int64)
-	if value > T(int64(math.MaxInt64)) {
+	// float64(math.MaxInt64) rounds up to 2**63 which doesn't fit in an int64
+	if value >= T(int64(math.MaxInt64)) {
 		*p = math.MaxInt64
 	} else {
 		*p = int64(value)

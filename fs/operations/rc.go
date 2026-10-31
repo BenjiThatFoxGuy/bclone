@@ -1,7 +1,9 @@
 ﻿package operations
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -9,22 +11,25 @@ import (
 	"mime/multipart"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
+	"github.com/rclone/rclone/fs/fspath"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fs/rc"
+	"github.com/rclone/rclone/fs/walk"
 	"github.com/rclone/rclone/lib/diskusage"
 )
 
 func init() {
 	rc.Add(rc.Call{
-		Path:         "operations/list",
-		AuthRequired: true,
-		Fn:           rcList,
-		Title:        "List the given remote and path in JSON format",
+		Path:  "operations/list",
+		Fn:    rcList,
+		Title: "List the given remote and path in JSON format",
 		Help: `This takes the following parameters:
 
 - fs - a remote name string e.g. "drive:"
@@ -77,10 +82,9 @@ func rcList(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 
 func init() {
 	rc.Add(rc.Call{
-		Path:         "operations/stat",
-		AuthRequired: true,
-		Fn:           rcStat,
-		Title:        "Give information about the supplied file or directory",
+		Path:  "operations/stat",
+		Fn:    rcStat,
+		Title: "Give information about the supplied file or directory",
 		Help: `This takes the following parameters
 
 - fs - a remote name string eg "drive:"
@@ -122,10 +126,9 @@ func rcStat(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 
 func init() {
 	rc.Add(rc.Call{
-		Path:         "operations/about",
-		AuthRequired: true,
-		Fn:           rcAbout,
-		Title:        "Return the space used on the remote",
+		Path:  "operations/about",
+		Fn:    rcAbout,
+		Title: "Return the space used on the remote",
 		Help: `This takes the following parameters:
 
 - fs - a remote name string e.g. "drive:"
@@ -165,8 +168,7 @@ func init() {
 			name = "Copy"
 		}
 		rc.Add(rc.Call{
-			Path:         "operations/" + strings.ToLower(name) + "file",
-			AuthRequired: true,
+			Path: "operations/" + strings.ToLower(name) + "file",
 			Fn: func(ctx context.Context, in rc.Params) (rc.Params, error) {
 				return rcMoveOrCopyFile(ctx, in, copy)
 			},
@@ -225,7 +227,6 @@ func init() {
 		}
 		rc.Add(rc.Call{
 			Path:         "operations/" + op.name,
-			AuthRequired: true,
 			NeedsRequest: op.needsRequest,
 			Fn: func(ctx context.Context, in rc.Params) (rc.Params, error) {
 				return rcSingleCommand(ctx, in, op.name, op.noRemote)
@@ -273,7 +274,15 @@ func rcSingleCommand(ctx context.Context, in rc.Params, name string, noRemote bo
 		if err != nil {
 			return nil, err
 		}
-		return nil, DeleteFile(ctx, o)
+		ci := fs.GetConfig(ctx)
+		var backupDir fs.Fs
+		if ci.BackupDir != "" || ci.Suffix != "" {
+			backupDir, err = BackupDir(ctx, f, f, remote)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return nil, DeleteFileWithBackupDir(ctx, o, backupDir)
 	case "copyurl":
 		url, err := in.GetString("url")
 		if err != nil {
@@ -314,7 +323,7 @@ func rcSingleCommand(ctx context.Context, in rc.Params, name string, noRemote bo
 					if err != nil {
 						return nil, err
 					}
-					fs.Debugf(obj, "Upload Succeeded")
+					fs.DebugfCtx(ctx, obj, "Upload Succeeded")
 				}
 			}
 		}
@@ -349,10 +358,9 @@ func rcSingleCommand(ctx context.Context, in rc.Params, name string, noRemote bo
 
 func init() {
 	rc.Add(rc.Call{
-		Path:         "operations/size",
-		AuthRequired: true,
-		Fn:           rcSize,
-		Title:        "Count the number of bytes and files in remote",
+		Path:  "operations/size",
+		Fn:    rcSize,
+		Title: "Count the number of bytes and files in remote",
 		Help: `This takes the following parameters:
 
 - fs - a remote name string e.g. "drive:path/to/dir"
@@ -386,10 +394,9 @@ func rcSize(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 
 func init() {
 	rc.Add(rc.Call{
-		Path:         "operations/publiclink",
-		AuthRequired: true,
-		Fn:           rcPublicLink,
-		Title:        "Create or retrieve a public link to the given file or folder.",
+		Path:  "operations/publiclink",
+		Fn:    rcPublicLink,
+		Title: "Create or retrieve a public link to the given file or folder.",
 		Help: `This takes the following parameters:
 
 - fs - a remote name string e.g. "drive:"
@@ -565,10 +572,9 @@ func rcFsInfo(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 
 func init() {
 	rc.Add(rc.Call{
-		Path:         "backend/command",
-		AuthRequired: true,
-		Fn:           rcBackend,
-		Title:        "Runs a backend command.",
+		Path:  "backend/command",
+		Fn:    rcBackend,
+		Title: "Runs a backend command.",
 		Help: `This takes the following parameters:
 
 - command - a string with the command name
@@ -651,9 +657,10 @@ func rcBackend(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 // to a circular dependency on config.
 func init() {
 	rc.Add(rc.Call{
-		Path:  "core/du",
-		Fn:    rcDu,
-		Title: "Returns disk usage of a locally attached disk.",
+		Path:   "core/du",
+		NoAuth: true,
+		Fn:     rcDu,
+		Title:  "Returns disk usage of a locally attached disk.",
 		Help: `
 This returns the disk usage for the local directory passed in as dir.
 
@@ -699,10 +706,51 @@ func rcDu(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 
 func init() {
 	rc.Add(rc.Call{
-		Path:         "operations/check",
-		AuthRequired: true,
-		Fn:           rcCheck,
-		Title:        "check the source and destination are the same",
+		Path:  "operations/index",
+		Fn:    rcIndex,
+		Title: "Write static directory listings into a remote",
+		Help: `This takes the following parameters:
+
+- fs - a remote name string e.g. "drive:"
+- opt - a dictionary of options to control the indexing (optional)
+    - output - list of listings to write in each directory as "NAME=FORMAT" (default ["index.html=html"])
+    - rules - which directories get listings, e.g. {"ExcludeRule": ["/private/**"]}
+    - maxDepth - only make listings this many directories deep (default -1 for no limit)
+    - linkIndex - link to "dir/NAME" rather than "dir/"
+    - dirTime - how to work out directory times: "newest", "dir" or "none"
+    - noModTime - don't show modification times
+    - rewrite - write every listing even if it is unchanged
+    - changed - list of changed paths for a partial run, directories ending in "/"
+    - changedFrom - list of files of changed paths, one per line
+    - changedCombined - list of files in the sync --combined report format
+    - changedMaxDirs - do a full run if a partial one would list more directories than this
+
+See the [index](/commands/rclone_index/) command for more information on the above.
+`,
+	})
+}
+
+// Index a remote
+func rcIndex(ctx context.Context, in rc.Params) (out rc.Params, err error) {
+	f, err := rc.GetFs(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	opt := IndexOptDefault
+	// Decoding into a slice reuses its backing array so don't share it with the defaults
+	opt.Outputs = slices.Clone(opt.Outputs)
+	err = in.GetStruct("opt", &opt)
+	if rc.NotErrParamNotFound(err) {
+		return nil, err
+	}
+	return nil, Index(ctx, f, &opt)
+}
+
+func init() {
+	rc.Add(rc.Call{
+		Path:  "operations/check",
+		Fn:    rcCheck,
+		Title: "check the source and destination are the same",
 		Help: `Checks the files in the source and destination match.  It compares
 sizes and hashes and logs a report of files that don't
 match.  It doesn't alter the source or destination.
@@ -772,6 +820,25 @@ func (s stringWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// RcReportWriter returns a writer for the report called name.
+//
+// The report is enabled if in[name] is true, or if in[name] is absent
+// and Default is true. When enabled, each line written to the returned
+// writer is collected as a string in out[name], otherwise nil is
+// returned to disable the report.
+func RcReportWriter(in rc.Params, out rc.Params, name string, Default bool) io.Writer {
+	active, err := in.GetBool(name)
+	if err != nil {
+		active = Default
+	}
+	if !active {
+		return nil
+	}
+	result := []string{}
+	out[name] = &result
+	return stringWriter{&result}
+}
+
 // Check two directories
 func rcCheck(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 	srcFs, err := rc.GetFsNamed(ctx, in, "srcFs")
@@ -830,26 +897,12 @@ func rcCheck(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 	}
 
 	out = rc.Params{}
-
-	getOutput := func(name string, Default bool) io.Writer {
-		active, err := in.GetBool(name)
-		if err != nil {
-			active = Default
-		}
-		if !active {
-			return nil
-		}
-		result := []string{}
-		out[name] = &result
-		return stringWriter{&result}
-	}
-
-	opt.Combined = getOutput("combined", false)
-	opt.MissingOnSrc = getOutput("missingOnSrc", true)
-	opt.MissingOnDst = getOutput("missingOnDst", true)
-	opt.Match = getOutput("match", false)
-	opt.Differ = getOutput("differ", true)
-	opt.Error = getOutput("error", true)
+	opt.Combined = RcReportWriter(in, out, "combined", false)
+	opt.MissingOnSrc = RcReportWriter(in, out, "missingOnSrc", true)
+	opt.MissingOnDst = RcReportWriter(in, out, "missingOnDst", true)
+	opt.Match = RcReportWriter(in, out, "match", false)
+	opt.Differ = RcReportWriter(in, out, "differ", true)
+	opt.Error = RcReportWriter(in, out, "error", true)
 
 	if checkFileHash != "" {
 		out["hashType"] = checkFileHashType.String()
@@ -874,10 +927,9 @@ func rcCheck(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 
 func init() {
 	rc.Add(rc.Call{
-		Path:         "operations/hashsum",
-		AuthRequired: true,
-		Fn:           rcHashsum,
-		Title:        "Produces a hashsum file for all the objects in the path.",
+		Path:  "operations/hashsum",
+		Fn:    rcHashsum,
+		Title: "Produces a hashsum file for all the objects in the path.",
 		Help: `Produces a hash file for all the objects in the path using the hash
 named.  The output is in the same format as the standard
 md5sum/sha1sum tool.
@@ -921,6 +973,18 @@ See the [hashsum](/commands/rclone_hashsum/) command for more information on the
 	})
 }
 
+// Parse download, base64 and hashType parameters
+func parseHashParameters(in rc.Params) (download bool, base64 bool, ht hash.Type, err error) {
+	download, _ = in.GetBool("download")
+	base64, _ = in.GetBool("base64")
+	hashType, err := in.GetString("hashType")
+	if err != nil {
+		return
+	}
+	err = ht.Set(hashType)
+	return
+}
+
 // Hashsum a directory
 func rcHashsum(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 	ctx, f, err := rc.GetFsNamedFileOK(ctx, in, "fs")
@@ -928,16 +992,9 @@ func rcHashsum(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 		return nil, err
 	}
 
-	download, _ := in.GetBool("download")
-	base64, _ := in.GetBool("base64")
-	hashType, err := in.GetString("hashType")
+	download, base64, ht, err := parseHashParameters(in)
 	if err != nil {
-		return nil, fmt.Errorf("%s\n%w", hash.HelpString(0), err)
-	}
-	var ht hash.Type
-	err = ht.Set(hashType)
-	if err != nil {
-		return nil, fmt.Errorf("%s\n%w", hash.HelpString(0), err)
+		return out, err
 	}
 
 	hashes := []string{}
@@ -947,4 +1004,255 @@ func rcHashsum(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 		"hashsum":  hashes,
 	}
 	return out, err
+}
+
+func init() {
+	rc.Add(rc.Call{
+		Path:  "operations/hashsumfile",
+		Fn:    rcHashsumFile,
+		Title: "Produces a hash for a single file.",
+		Help: `Produces a hash for a single file using the hash named.
+
+This takes the following parameters:
+
+- fs - a remote name string e.g. "drive:"
+- remote - a path within that remote e.g. "file.txt"
+- hashType - type of hash to be used
+- download - check by downloading rather than with hash (boolean)
+- base64 - output the hashes in base64 rather than hex (boolean)
+
+If you supply the download flag, it will download the data from the
+remote and create the hash on the fly. This can be useful for remotes
+that don't support the given hash or if you really want to read all
+the data.
+
+Returns:
+
+- hash - hash for the file
+- hashType - type of hash used
+
+Example:
+
+    $ rclone rc --loopback operations/hashsumfile fs=/ remote=/bin/bash hashType=MD5 download=true base64=true
+    {
+        "hashType": "md5",
+        "hash": "MDMw-fG2YXs7Uz5Nz-H68A=="
+    }
+
+See the [hashsum](/commands/rclone_hashsum/) command for more information on the above.
+`,
+	})
+}
+
+// Hashsum a file
+func rcHashsumFile(ctx context.Context, in rc.Params) (out rc.Params, err error) {
+	f, remote, err := rc.GetFsAndRemote(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	download, base64, ht, err := parseHashParameters(in)
+	if err != nil {
+		return out, err
+	}
+	o, err := f.NewObject(ctx, remote)
+	if err != nil {
+		return nil, err
+	}
+	sum, err := HashSum(ctx, ht, base64, download, o)
+	out = rc.Params{
+		"hashType": ht.String(),
+		"hash":     sum,
+	}
+	return out, err
+}
+
+// DefaultGetFileMaxSize is the built-in maximum size limit in bytes for operations/getfile (2 MiB)
+const DefaultGetFileMaxSize = 2 * 1024 * 1024
+
+// maxLimitWriter writes into a buffer up to limit bytes, returning an error if more data is written.
+type maxLimitWriter struct {
+	buf   bytes.Buffer
+	limit int64
+}
+
+func (w *maxLimitWriter) Write(p []byte) (n int, err error) {
+	rem := w.limit - int64(w.buf.Len())
+	if int64(len(p)) > rem {
+		if rem > 0 {
+			w.buf.Write(p[:rem])
+		}
+		return int(rem), fmt.Errorf("read exceeded maximum limit of %d bytes; use offset/count, maxSize or --rc-serve", w.limit)
+	}
+	return w.buf.Write(p)
+}
+
+func init() {
+	rc.Add(rc.Call{
+		Path:  "operations/getfile",
+		Fn:    rcGetFile,
+		Title: "Get a single file into a JSON response.",
+		Help: `This takes the following parameters:
+
+- fs - a remote name string e.g. "drive:path/to/file" or "drive:path/to/dir"
+- remote - (optional) a path within that remote e.g. "file.txt"
+- offset - (optional) start reading at offset N (or from end if negative) (default 0)
+- count - (optional) only read N bytes (default -1)
+- head - (optional) only read the first N bytes (default 0)
+- tail - (optional) only read the last N bytes (default 0)
+- maxSize - (optional) maximum size limit in bytes (can only lower the built-in maximum) (default 2097152 / 2MiB)
+- base64 - (optional) if true, returns the file contents base64-encoded (default false)
+
+Returns:
+
+- result - contents of the file as string or base64-encoded string
+
+For streaming file content over HTTP with Range support, use the --rc-serve flag instead.
+`,
+	})
+}
+
+// Get a single file into a JSON response
+func rcGetFile(ctx context.Context, in rc.Params) (out rc.Params, err error) {
+	remote, err := in.GetString("remote")
+	if rc.NotErrParamNotFound(err) {
+		return nil, err
+	}
+	fsString, err := in.GetString("fs")
+	if err != nil {
+		return nil, err
+	}
+	if remote != "" {
+		in = in.Copy()
+		in["fs"] = fspath.JoinRootPath(fsString, remote)
+	}
+
+	offset, err := in.GetInt64("offset")
+	if rc.NotErrParamNotFound(err) {
+		return nil, err
+	}
+	count, err := in.GetInt64("count")
+	if rc.NotErrParamNotFound(err) {
+		return nil, err
+	}
+	if rc.IsErrParamNotFound(err) {
+		count = -1
+	}
+	head, err := in.GetInt64("head")
+	if rc.NotErrParamNotFound(err) {
+		return nil, err
+	}
+	tail, err := in.GetInt64("tail")
+	if rc.NotErrParamNotFound(err) {
+		return nil, err
+	}
+
+	usedOffset := offset != 0 || count >= 0
+	usedHead := head > 0
+	usedTail := tail > 0
+
+	if (usedHead && usedTail) || (usedHead && usedOffset) || (usedTail && usedOffset) {
+		return nil, errors.New("can only use one of head, tail or offset/count")
+	}
+	if head < 0 {
+		return nil, errors.New("head cannot be negative")
+	}
+	if tail < 0 {
+		return nil, errors.New("tail cannot be negative")
+	}
+	if head > 0 {
+		offset = 0
+		count = head
+	}
+	if tail > 0 {
+		offset = -tail
+		count = -1
+	}
+
+	limit := int64(DefaultGetFileMaxSize)
+	maxSize, err := in.GetInt64("maxSize")
+	if rc.NotErrParamNotFound(err) {
+		return nil, err
+	}
+	if !rc.IsErrParamNotFound(err) {
+		if maxSize <= 0 {
+			return nil, errors.New("maxSize must be greater than 0")
+		}
+		if maxSize > DefaultGetFileMaxSize {
+			return nil, fmt.Errorf("maxSize %d cannot exceed built-in maximum of %d bytes", maxSize, DefaultGetFileMaxSize)
+		}
+		limit = maxSize
+	}
+
+	base64Encoded, err := in.GetBool("base64")
+	if rc.NotErrParamNotFound(err) {
+		return nil, err
+	}
+
+	ctx, f, err := rc.GetFsNamedFileOK(ctx, in, "fs")
+	if err != nil {
+		return nil, err
+	}
+
+	ci := fs.GetConfig(ctx)
+	var (
+		fileCount int
+		w         = &maxLimitWriter{limit: limit}
+	)
+
+	err = walk.ListR(ctx, f, "", false, ci.MaxDepth, walk.ListObjects, func(entries fs.DirEntries) error {
+		for _, entry := range entries {
+			o, ok := entry.(fs.Object)
+			if !ok {
+				continue
+			}
+			fileCount++
+			if fileCount > 1 {
+				return errors.New("found more than one file; operations/getfile only supports a single file")
+			}
+
+			// Pre-check size if known
+			size := o.Size()
+			if size >= 0 {
+				start := offset
+				if start < 0 {
+					start += size
+				}
+				if start > size {
+					start = size
+				}
+				reqSize := size - start
+				if count >= 0 && count < reqSize {
+					reqSize = count
+				}
+				if reqSize > limit {
+					return fmt.Errorf("requested size (%d bytes) exceeds maximum limit of %d bytes; use offset/count, maxSize or --rc-serve", reqSize, limit)
+				}
+			}
+
+			err = catObject(ctx, o, w, offset, count)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if fileCount == 0 {
+		return nil, fs.ErrorObjectNotFound
+	}
+
+	data := w.buf.Bytes()
+	if base64Encoded {
+		return rc.Params{
+			"result": base64.StdEncoding.EncodeToString(data),
+		}, nil
+	}
+	if !utf8.Valid(data) {
+		return nil, errors.New("file content is not valid UTF-8 (use base64=true for binary files)")
+	}
+	return rc.Params{
+		"result": string(data),
+	}, nil
 }

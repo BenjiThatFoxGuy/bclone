@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"path"
 	"strings"
@@ -37,6 +38,10 @@ func init() {
 		Description: "HTTP",
 		NewFs:       NewFs,
 		CommandHelp: commandHelp,
+		MetadataInfo: &fs.MetadataInfo{
+			System: systemMetadataInfo,
+			Help:   `HTTP metadata keys are case insensitive and are always returned in lower case.`,
+		},
 		Options: []fs.Option{{
 			Name:     "url",
 			Help:     "URL of HTTP host to connect to.\n\nE.g. \"https://example.com\", or \"https://user:pass@example.com\" to use a username and password.",
@@ -52,7 +57,13 @@ The input format is comma separated list of key,value pairs.  Standard
 
 For example, to set a Cookie use 'Cookie,name=value', or '"Cookie","name=value"'.
 
-You can set multiple headers, e.g. '"Cookie","name=value","Authorization","xxx"'.`,
+You can set multiple headers, e.g. '"Cookie","name=value","Authorization","xxx"'.
+
+The headers are only sent to the host in the configured URL. If the
+server redirects to another host (including a subdomain or a different
+port) the headers are not sent to it, or to any further hop in that
+redirect chain. When headers are set, a redirect from https to http is
+refused as it would send them in cleartext.`,
 			Default:  fs.CommaSepList{},
 			Advanced: true,
 		}, {
@@ -90,6 +101,30 @@ sizes of any files, and some files that don't exist may be in the listing.`,
 			Default:  false,
 			Advanced: true,
 		}, {
+			Name: "no_head_size",
+			Help: `Set the reported file size for --http-no-head.
+
+When HEAD requests are disabled, rclone normally reports an unknown file size.
+Set this option to a non-negative value to report that size for every file,
+including 0. Leave it unset (the default, shown as "off") to keep reporting
+an unknown size.
+
+The configured size is authoritative. If it does not match the actual file
+size, transfers may fail their size check and retry unless --ignore-size is
+used. It can also make multi-thread transfers request incorrect ranges and
+make mounted files unreadable past the reported size.`,
+			Default:  fs.SizeSuffix(-1),
+			Advanced: true,
+		}, {
+			Name: "no_head_time",
+			Help: `Set a default modification time for --http-no-head.
+
+When HEAD requests are disabled, rclone normally reports an unset modification
+time. Set this option to report the specified time for every file instead.
+Changing the configured time later makes every file appear modified to a sync.`,
+			Default:  fs.Time{},
+			Advanced: true,
+		}, {
 			Name:    "no_escape",
 			Help:    "Do not escape URL metacharacters in path names.",
 			Default: false,
@@ -98,13 +133,49 @@ sizes of any files, and some files that don't exist may be in the listing.`,
 	fs.Register(fsi)
 }
 
+// system metadata keys which this backend owns
+var systemMetadataInfo = map[string]fs.MetadataHelp{
+	"cache-control": {
+		Help:    "Cache-Control header",
+		Type:    "string",
+		Example: "no-cache",
+	},
+	"content-disposition": {
+		Help:    "Content-Disposition header",
+		Type:    "string",
+		Example: "inline",
+	},
+	"content-disposition-filename": {
+		Help:    "Filename retrieved from Content-Disposition header",
+		Type:    "string",
+		Example: "file.txt",
+	},
+	"content-encoding": {
+		Help:    "Content-Encoding header",
+		Type:    "string",
+		Example: "gzip",
+	},
+	"content-language": {
+		Help:    "Content-Language header",
+		Type:    "string",
+		Example: "en-US",
+	},
+	"content-type": {
+		Help:    "Content-Type header",
+		Type:    "string",
+		Example: "text/plain",
+	},
+}
+
 // Options defines the configuration for this backend
 type Options struct {
-	Endpoint string          `config:"url"`
-	NoSlash  bool            `config:"no_slash"`
-	NoHead   bool            `config:"no_head"`
-	Headers  fs.CommaSepList `config:"headers"`
-	NoEscape bool            `config:"no_escape"`
+	Endpoint   string          `config:"url"`
+	NoSlash    bool            `config:"no_slash"`
+	NoHead     bool            `config:"no_head"`
+	NoHeadSize fs.SizeSuffix   `config:"no_head_size"`
+	NoHeadTime fs.Time         `config:"no_head_time"`
+	Headers    fs.CommaSepList `config:"headers"`
+	NoEscape   bool            `config:"no_escape"`
 }
 
 // Fs stores the interface to the remote HTTP files
@@ -117,6 +188,7 @@ type Fs struct {
 	endpoint    *url.URL
 	endpointURL string // endpoint as a string
 	httpClient  *http.Client
+	fileName    string // set if we are pointing to a file
 }
 
 // Object is a remote object that has been stat'd (so it exists, but is not necessarily open for reading)
@@ -126,6 +198,13 @@ type Object struct {
 	size        int64
 	modTime     time.Time
 	contentType string
+
+	// Metadata as pointers to strings as they often won't be present
+	contentDisposition         *string // Content-Disposition: header
+	contentDispositionFilename *string // Filename retrieved from Content-Disposition: header
+	cacheControl               *string // Cache-Control: header
+	contentEncoding            *string // Content-Encoding: header
+	contentLanguage            *string // Content-Language: header
 }
 
 // statusError returns an error if the res contained an error
@@ -230,12 +309,17 @@ func (f *Fs) httpConnection(ctx context.Context, opt *Options) (isFile bool, err
 	if err != nil {
 		return false, err
 	}
-	u, err := rest.URLJoin(base, rest.URLPathEscape(f.root))
+	u, err := rest.URLJoinRoot(base, f.root)
 	if err != nil {
 		return false, err
 	}
 
 	client := fshttp.NewClient(ctx)
+	// Without configured headers keep the default policy which
+	// public mirrors that redirect from https to http rely on.
+	if len(opt.Headers) > 0 {
+		client.CheckRedirect = checkRedirect(opt)
+	}
 
 	endpoint, isFile := getFsEndpoint(ctx, client, u.String(), opt)
 	fs.Debugf(nil, "Root: %s", endpoint)
@@ -251,6 +335,7 @@ func (f *Fs) httpConnection(ctx context.Context, opt *Options) (isFile bool, err
 
 	if isFile {
 		// Correct root if definitely pointing to a file
+		f.fileName = path.Base(f.root)
 		f.root = path.Dir(f.root)
 		if f.root == "." || f.root == "/" {
 			f.root = ""
@@ -263,7 +348,9 @@ func (f *Fs) httpConnection(ctx context.Context, opt *Options) (isFile bool, err
 // the host specified in the config file.
 func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
 	// Parse config into Options struct
-	opt := new(Options)
+	opt := &Options{
+		NoHeadSize: fs.SizeSuffix(-1),
+	}
 	err := configstruct.Set(m, opt)
 	if err != nil {
 		return nil, err
@@ -277,6 +364,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		ci:   ci,
 	}
 	f.features = (&fs.Features{
+		ReadMetadata:            true,
 		CanHaveEmptyDirectories: true,
 	}).Fill(ctx, f)
 
@@ -429,12 +517,54 @@ func parse(base *url.URL, in io.Reader) (names []string, err error) {
 	return names, nil
 }
 
+// parseFilename extracts the filename from a Content-Disposition header
+func parseFilename(contentDisposition string) (string, error) {
+	// Normalize the contentDisposition to canonical MIME format
+	mediaType, params, err := mime.ParseMediaType(contentDisposition)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse contentDisposition: %v", err)
+	}
+
+	// Check if the contentDisposition is an attachment
+	if strings.ToLower(mediaType) != "attachment" {
+		return "", fmt.Errorf("not an attachment: %s", mediaType)
+	}
+
+	// Extract the filename from the parameters
+	filename, ok := params["filename"]
+	if !ok {
+		return "", fmt.Errorf("filename not found in contentDisposition")
+	}
+
+	// Decode filename if it contains special encoding
+	return textproto.TrimString(filename), nil
+}
+
 // Adds the configured headers to the request if any
 func addHeaders(req *http.Request, opt *Options) {
 	for i := 0; i < len(opt.Headers); i += 2 {
 		key := opt.Headers[i]
 		value := opt.Headers[i+1]
 		req.Header.Add(key, value)
+	}
+}
+
+// checkRedirect returns an http.Client.CheckRedirect function which
+// follows redirects but refuses an HTTPS to HTTP downgrade with
+// rest.ErrHTTPSDowngrade and strips the configured headers when the
+// redirect chain has left the originally requested host at any point.
+func checkRedirect(opt *Options) func(req *http.Request, via []*http.Request) error {
+	headers := make([]string, 0, len(opt.Headers)/2)
+	for i := 0; i < len(opt.Headers); i += 2 {
+		headers = append(headers, opt.Headers[i])
+	}
+	stripHeaders := rest.StripHeadersOnCrossHostRedirectFn(headers...)
+	return func(req *http.Request, via []*http.Request) error {
+		err := stripHeaders(req, via)
+		if errors.Is(err, rest.ErrHTTPSDowngrade) {
+			err = fmt.Errorf("%w (the configured headers would be sent to the plaintext target)", err)
+		}
+		return err
 	}
 }
 
@@ -471,7 +601,7 @@ func (f *Fs) readDir(ctx context.Context, dir string) (names []string, err error
 		return nil, fmt.Errorf("failed to readDir: %w", err)
 	}
 
-	contentType := strings.SplitN(res.Header.Get("Content-Type"), ";", 2)[0]
+	contentType, _, _ := strings.Cut(res.Header.Get("Content-Type"), ";")
 	switch contentType {
 	case "text/html":
 		names, err = parse(u, res.Body)
@@ -494,6 +624,17 @@ func (f *Fs) readDir(ctx context.Context, dir string) (names []string, err error
 // This should return ErrDirNotFound if the directory isn't
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
+	// pointed at a single file: only that file is visible
+	if f.fileName != "" {
+		if dir != "" {
+			return nil, fs.ErrorDirNotFound
+		}
+		obj, err := f.NewObject(ctx, f.fileName)
+		if err != nil {
+			return nil, err
+		}
+		return fs.DirEntries{obj}, nil
+	}
 	if !strings.HasSuffix(dir, "/") && dir != "" {
 		dir += "/"
 	}
@@ -513,9 +654,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		entriesMu.Unlock()
 	}
 	for range checkers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for remote := range in {
 				file := &Object{
 					fs:     f,
@@ -531,7 +670,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 					fs.Debugf(remote, "skipping because of error: %v", err)
 				}
 			}
-		}()
+		})
 	}
 	for _, name := range names {
 		isDir := name[len(name)-1] == '/'
@@ -577,6 +716,9 @@ func (o *Object) String() string {
 
 // Remote the name of the remote HTTP file, relative to the fs root
 func (o *Object) Remote() string {
+	if o.contentDispositionFilename != nil {
+		return *o.contentDispositionFilename
+	}
 	return o.remote
 }
 
@@ -603,8 +745,11 @@ func (o *Object) url() string {
 // head sends a HEAD request to update info fields in the Object
 func (o *Object) head(ctx context.Context) error {
 	if o.fs.opt.NoHead {
-		o.size = -1
+		o.size = int64(o.fs.opt.NoHeadSize)
 		o.modTime = timeUnset
+		if o.fs.opt.NoHeadTime.IsSet() {
+			o.modTime = time.Time(o.fs.opt.NoHeadTime)
+		}
 		o.contentType = fs.MimeType(ctx, o)
 		return nil
 	}
@@ -634,6 +779,29 @@ func (o *Object) decodeMetadata(ctx context.Context, res *http.Response) error {
 	o.modTime = t
 	o.contentType = res.Header.Get("Content-Type")
 	o.size = rest.ParseSizeFromHeaders(res.Header)
+	contentDisposition := res.Header.Get("Content-Disposition")
+	if contentDisposition != "" {
+		o.contentDisposition = &contentDisposition
+	}
+	if o.contentDisposition != nil {
+		var filename string
+		filename, err = parseFilename(*o.contentDisposition)
+		if err == nil && filename != "" {
+			o.contentDispositionFilename = &filename
+		}
+	}
+	cacheControl := res.Header.Get("Cache-Control")
+	if cacheControl != "" {
+		o.cacheControl = &cacheControl
+	}
+	contentEncoding := res.Header.Get("Content-Encoding")
+	if contentEncoding != "" {
+		o.contentEncoding = &contentEncoding
+	}
+	contentLanguage := res.Header.Get("Content-Language")
+	if contentLanguage != "" {
+		o.contentLanguage = &contentLanguage
+	}
 
 	// If NoSlash is set then check ContentType to see if it is a directory
 	if o.fs.opt.NoSlash {
@@ -722,11 +890,13 @@ var commandHelp = []fs.CommandHelp{{
 	Long: `This set command can be used to update the config parameters
 for a running http backend.
 
-Usage Examples:
+Usage examples:
 
-    rclone backend set remote: [-o opt_name=opt_value] [-o opt_name2=opt_value2]
-    rclone rc backend/command command=set fs=remote: [-o opt_name=opt_value] [-o opt_name2=opt_value2]
-    rclone rc backend/command command=set fs=remote: -o url=https://example.com
+` + "```console" + `
+rclone backend set remote: [-o opt_name=opt_value] [-o opt_name2=opt_value2]
+rclone rc backend/command command=set fs=remote: [-o opt_name=opt_value] [-o opt_name2=opt_value2]
+rclone rc backend/command command=set fs=remote: -o url=https://example.com
+` + "```" + `
 
 The option keys are named as they are in the config file.
 
@@ -734,8 +904,7 @@ This rebuilds the connection to the http backend when it is called with
 the new parameters. Only new parameters need be passed as the values
 will default to those currently in use.
 
-It doesn't return anything.
-`,
+It doesn't return anything.`,
 }}
 
 // Command the backend to run a named command
@@ -771,6 +940,30 @@ func (f *Fs) Command(ctx context.Context, name string, arg []string, opt map[str
 	}
 }
 
+// Metadata returns metadata for an object
+//
+// It should return nil if there is no Metadata
+func (o *Object) Metadata(ctx context.Context) (metadata fs.Metadata, err error) {
+	metadata = make(fs.Metadata, 6)
+	if o.contentType != "" {
+		metadata["content-type"] = o.contentType
+	}
+
+	// Set system metadata
+	setMetadata := func(k string, v *string) {
+		if v == nil || *v == "" {
+			return
+		}
+		metadata[k] = *v
+	}
+	setMetadata("content-disposition", o.contentDisposition)
+	setMetadata("content-disposition-filename", o.contentDispositionFilename)
+	setMetadata("cache-control", o.cacheControl)
+	setMetadata("content-language", o.contentLanguage)
+	setMetadata("content-encoding", o.contentEncoding)
+	return metadata, nil
+}
+
 // Check the interfaces are satisfied
 var (
 	_ fs.Fs          = &Fs{}
@@ -778,4 +971,5 @@ var (
 	_ fs.Object      = &Object{}
 	_ fs.MimeTyper   = &Object{}
 	_ fs.Commander   = &Fs{}
+	_ fs.Metadataer  = &Object{}
 )

@@ -13,6 +13,7 @@ import (
 
 	"github.com/rclone/rclone/backend/seafile/api"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/lib/readers"
 	"github.com/rclone/rclone/lib/rest"
 )
@@ -688,10 +689,12 @@ func (f *Fs) upload(ctx context.Context, in io.Reader, uploadLink, filePath stri
 		"need_idx_progress": {"true"},
 		"replace":           {"1"},
 	}
-	formReader, contentType, _, err := rest.MultipartUpload(ctx, in, parameters, "file", f.opt.Enc.FromStandardName(filename))
+	formReader, contentType, _, err := rest.MultipartUpload(ctx, in, parameters, "file", f.opt.Enc.FromStandardName(filename), "application/octet-stream")
 	if err != nil {
 		return nil, fmt.Errorf("failed to make multipart upload: %w", err)
 	}
+	// Stop the form writer reading in if the request fails before sending it all
+	defer func() { _ = formReader.Close() }()
 
 	opts := rest.Opts{
 		Method:      "POST",
@@ -721,8 +724,8 @@ func (f *Fs) upload(ctx context.Context, in io.Reader, uploadLink, filePath stri
 				return nil, fs.ErrorPermissionDenied
 			}
 			if resp.StatusCode == 500 {
-				// This is a temporary error - we will get a new upload link before retrying
-				return nil, ErrorInternalDuringUpload
+				// This is a temporary error - the caller will get a new upload link when it retries
+				return nil, fserrors.RetryError(ErrorInternalDuringUpload)
 			}
 		}
 		return nil, fmt.Errorf("failed to upload file: %w", err)

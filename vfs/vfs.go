@@ -38,6 +38,7 @@ import (
 	"github.com/go-git/go-billy/v5"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/cache"
+	"github.com/rclone/rclone/fs/filter"
 	"github.com/rclone/rclone/fs/log"
 	"github.com/rclone/rclone/fs/rc"
 	"github.com/rclone/rclone/fs/walk"
@@ -68,6 +69,8 @@ type Node interface {
 	Truncate(size int64) error
 	Path() string
 	SetSys(any)
+	Aux(owner any) any
+	SetAux(owner, value any)
 }
 
 // Check interfaces
@@ -176,6 +179,7 @@ var (
 // VFS represents the top level filing system
 type VFS struct {
 	f           fs.Fs
+	ctx         context.Context
 	root        *Dir
 	Opt         vfscommon.Options
 	cache       *vfscache.Cache
@@ -184,6 +188,7 @@ type VFS struct {
 	usageMu     sync.Mutex
 	usageTime   time.Time
 	usage       *fs.Usage
+	pollMu      sync.Mutex
 	pollChan    chan time.Duration
 	inUse       atomic.Int32 // count of number of opens
 }
@@ -195,12 +200,21 @@ var (
 )
 
 // New creates a new VFS and root directory.  If opt is nil, then
-// DefaultOpt will be used
-func New(f fs.Fs, opt *vfscommon.Options) *VFS {
+// DefaultOpt will be used.
+//
+// The ctx passed in is not used for cancellation but is used to find
+// the config in the context (if any) and filter config in the context
+// (if any).
+func New(ctx context.Context, f fs.Fs, opt *vfscommon.Options) *VFS {
 	fsDir := fs.NewDir("", time.Now())
-	ctx, cancel := context.WithCancel(context.Background())
+	// Strip the ctx of any cancellation but copy the config across
+	newCtx := context.Background()
+	newCtx = fs.CopyConfig(newCtx, ctx)
+	newCtx = filter.CopyConfig(newCtx, ctx)
+	ctx, cancel := context.WithCancel(newCtx)
 	vfs := &VFS{
 		f:      f,
+		ctx:    ctx,
 		cancel: cancel,
 	}
 	vfs.inUse.Store(1)
@@ -213,16 +227,18 @@ func New(f fs.Fs, opt *vfscommon.Options) *VFS {
 	}
 
 	// Fill out anything else
-	vfs.Opt.Init()
+	vfs.Opt.Init(ctx)
 
 	// Find a VFS with the same name and options and return it if possible
 	activeMu.Lock()
 	defer activeMu.Unlock()
 	configName := fs.ConfigString(f)
 	for _, activeVFS := range active[configName] {
-		if vfs.Opt == activeVFS.Opt {
+		// A VFS whose last reference has gone is being shut down
+		// but may not have removed itself from the cache yet.
+		if vfs.Opt == activeVFS.Opt && activeVFS.Hold() {
 			fs.Debugf(f, "Reusing VFS from active cache")
-			activeVFS.inUse.Add(1)
+			cancel()
 			return activeVFS
 		}
 	}
@@ -236,7 +252,7 @@ func New(f fs.Fs, opt *vfscommon.Options) *VFS {
 	features := vfs.f.Features()
 	if do := features.ChangeNotify; do != nil {
 		vfs.pollChan = make(chan time.Duration)
-		do(context.TODO(), vfs.root.changeNotify, vfs.pollChan)
+		do(vfs.ctx, vfs.root.changeNotify, vfs.pollChan)
 		vfs.pollChan <- time.Duration(vfs.Opt.PollInterval)
 	} else if vfs.Opt.PollInterval > 0 {
 		fs.Infof(f, "poll-interval is not supported by this remote")
@@ -273,6 +289,7 @@ func New(f fs.Fs, opt *vfscommon.Options) *VFS {
 
 // refresh the directory cache for all directories
 func (vfs *VFS) refresh() {
+	defer vfscommon.RecoverPanic(vfs.f, nil)
 	fs.Debugf(vfs.f, "Refreshing VFS directory cache")
 	err := vfs.root.readDirTree()
 	if err != nil {
@@ -341,6 +358,12 @@ func activeCacheEntries() (vfs *VFS, count int) {
 	return vfs, count
 }
 
+// ActiveCount returns the total number of VFS instances in the active cache.
+func ActiveCount() int {
+	_, count := activeCacheEntries()
+	return count
+}
+
 // Fs returns the Fs passed into the New call
 func (vfs *VFS) Fs() fs.Fs {
 	return vfs.f
@@ -351,8 +374,8 @@ func (vfs *VFS) SetCacheMode(cacheMode vfscommon.CacheMode) {
 	vfs.shutdownCache()
 	vfs.cache = nil
 	if cacheMode > vfscommon.CacheModeOff {
-		ctx, cancel := context.WithCancel(context.Background())
-		cache, err := vfscache.New(ctx, vfs.f, &vfs.Opt, vfs.AddVirtual) // FIXME pass on context or get from Opt?
+		ctx, cancel := context.WithCancel(vfs.ctx)
+		cache, err := vfscache.New(ctx, vfs.f, &vfs.Opt, vfs.AddVirtual)
 		if err != nil {
 			fs.Errorf(nil, "Failed to create vfs cache - disabling: %v", err)
 			vfs.Opt.CacheMode = vfscommon.CacheModeOff
@@ -370,6 +393,21 @@ func (vfs *VFS) shutdownCache() {
 	if vfs.cancelCache != nil {
 		vfs.cancelCache()
 		vfs.cancelCache = nil
+	}
+}
+
+// Hold takes another reference to the VFS so it isn't shut down until
+// a matching call to Shutdown. It returns false, taking no reference,
+// if the VFS has already been shut down.
+func (vfs *VFS) Hold() bool {
+	for {
+		n := vfs.inUse.Load()
+		if n <= 0 {
+			return false
+		}
+		if vfs.inUse.CompareAndSwap(n, n+1) {
+			return true
+		}
 	}
 }
 
@@ -395,13 +433,15 @@ func (vfs *VFS) Shutdown() {
 
 	vfs.shutdownCache()
 
+	// Cancel any background go routines
+	vfs.cancel()
+
+	vfs.pollMu.Lock()
 	if vfs.pollChan != nil {
 		close(vfs.pollChan)
 		vfs.pollChan = nil
 	}
-
-	// Cancel any background go routines
-	vfs.cancel()
+	vfs.pollMu.Unlock()
 }
 
 // CleanUp deletes the contents of the on disk cache
@@ -417,6 +457,25 @@ func (vfs *VFS) FlushDirCache() {
 	vfs.root.ForgetAll()
 }
 
+// countInUse returns the number of files open for write and the
+// number of cached files which are open or waiting to be uploaded.
+func (vfs *VFS) countInUse() (writers, cacheInUse int) {
+	writers = vfs.root.countActiveWriters()
+	if vfs.cache != nil {
+		cacheInUse = vfs.cache.TotalInUse()
+	}
+	return writers, cacheInUse
+}
+
+// Busy returns true if the VFS has files open for write or cached
+// files which are open or waiting to be uploaded.
+//
+// It may block while a directory is being read from the remote.
+func (vfs *VFS) Busy() bool {
+	writers, cacheInUse := vfs.countInUse()
+	return writers != 0 || cacheInUse != 0
+}
+
 // WaitForWriters sleeps until all writers have finished or
 // time.Duration has elapsed
 func (vfs *VFS) WaitForWriters(timeout time.Duration) {
@@ -428,11 +487,7 @@ func (vfs *VFS) WaitForWriters(timeout time.Duration) {
 	defer tick.Stop()
 	tick.Stop()
 	for {
-		writers := vfs.root.countActiveWriters()
-		cacheInUse := 0
-		if vfs.cache != nil {
-			cacheInUse = vfs.cache.TotalInUse()
-		}
+		writers, cacheInUse := vfs.countInUse()
 		if writers == 0 && cacheInUse == 0 {
 			return
 		}
@@ -652,7 +707,7 @@ func (vfs *VFS) Statfs() (total, used, free int64) {
 	doAbout := vfs.f.Features().About
 	if (doAbout != nil || vfs.Opt.UsedIsSize) && (vfs.usageTime.IsZero() || time.Since(vfs.usageTime) >= time.Duration(vfs.Opt.DirCacheTime)) {
 		var err error
-		ctx := context.TODO()
+		ctx := vfs.ctx
 		if doAbout == nil {
 			vfs.usage = &fs.Usage{}
 		} else {
@@ -730,9 +785,54 @@ func (vfs *VFS) Chtimes(name string, atime time.Time, mtime time.Time) error {
 	return nil
 }
 
+// Chmod changes the mode of the named file.
+//
+// If name is a symlink the mode of the link itself is changed, not
+// its target (like lchmod). It does not follow the link, so it works
+// on symlinks whose target doesn't exist.
+//
+// The VFS doesn't store file permissions so currently this returns
+// ENOSYS if the file exists and ENOENT if it doesn't.
+func (vfs *VFS) Chmod(name string, mode os.FileMode) error {
+	_, err := vfs.Stat(name)
+	if err != nil {
+		return err
+	}
+	return ENOSYS
+}
+
+// Chown changes the uid and gid of the named file.
+//
+// If name is a symlink the ownership of the link itself is changed,
+// not its target (like lchown). It does not follow the link, so it
+// works on symlinks whose target doesn't exist.
+//
+// The VFS doesn't store file ownership so currently this returns
+// ENOSYS if the file exists and ENOENT if it doesn't.
+func (vfs *VFS) Chown(name string, uid, gid int) error {
+	_, err := vfs.Stat(name)
+	if err != nil {
+		return err
+	}
+	return ENOSYS
+}
+
 // mkdir creates a new directory with the specified name and permission bits
 // (before umask) returning the new directory node.
 func (vfs *VFS) mkdir(name string, perm os.FileMode) (*Dir, error) {
+	// The root directory node always exists, but the directory it
+	// represents may not, so make that on the backend.
+	if strings.Trim(name, "/") == "" {
+		if vfs.Opt.ReadOnly {
+			return nil, EROFS
+		}
+		err := vfs.f.Mkdir(vfs.ctx, "")
+		if err != nil {
+			fs.Errorf(vfs.root, "Dir.Mkdir failed to create directory: %v", err)
+			return nil, err
+		}
+		return vfs.root, nil
+	}
 	dir, leaf, err := vfs.StatParent(name)
 	if err != nil {
 		return nil, err
@@ -845,7 +945,7 @@ func (vfs *VFS) AddVirtual(remote string, size int64, isDir bool) (err error) {
 	if err != nil {
 		return err
 	}
-	dir.AddVirtual(leaf, size, false)
+	dir.AddVirtual(leaf, size, isDir)
 	return nil
 }
 

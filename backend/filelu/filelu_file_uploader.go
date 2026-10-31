@@ -10,10 +10,115 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/rclone/rclone/fs"
+	rclonemultipart "github.com/rclone/rclone/lib/multipart"
+	"github.com/rclone/rclone/lib/rest"
 )
+
+// multipartUpload uploads a file in fixed-size chunks using the multipart API.
+func (f *Fs) multipartUpload(ctx context.Context, in io.Reader, remote string) error {
+	dir := path.Dir(remote)
+	if dir == "." {
+		dir = ""
+	}
+
+	if dir != "" {
+		if _, err := f.createFolder(ctx, dir); err != nil {
+			return fmt.Errorf("failed to create multipart folder: %w", err)
+		}
+	}
+
+	folder := strings.Trim(dir, "/")
+	if folder != "" {
+		folder = "/" + folder
+	}
+
+	file := path.Base(remote)
+
+	initResp, err := f.multipartInit(ctx, folder, file)
+	if err != nil {
+		return fmt.Errorf("multipart init failed: %w", err)
+	}
+
+	uploadID := initResp.Result.UploadID
+	sessID := initResp.Result.SessID
+	server := initResp.Result.Server
+	objectPath := initResp.Result.ObjectPath
+
+	chunkSize := int64(f.opt.ChunkSize)
+	if chunkSize <= 0 {
+		return fmt.Errorf("multipart upload: chunk_size must be positive: %v", f.opt.ChunkSize)
+	}
+	for partNo := 1; ; partNo++ {
+		// Buffer the part in memory from the global pool so it can be
+		// re-sent on retry
+		rw := rclonemultipart.NewRW()
+		n, err := io.CopyN(rw, in, chunkSize)
+		if err != nil && err != io.EOF {
+			_ = rw.Close()
+			return fmt.Errorf("read failed: %w", err)
+		}
+		if n > 0 {
+			uploadErr := f.uploadPart(ctx, server, uploadID, sessID, objectPath, partNo, rw, n)
+			if uploadErr != nil {
+				_ = rw.Close()
+				return fmt.Errorf("upload part %d failed: %w", partNo, uploadErr)
+			}
+		}
+		if closeErr := rw.Close(); closeErr != nil {
+			return closeErr
+		}
+		if err == io.EOF {
+			break
+		}
+	}
+
+	err = f.completeMultipart(ctx, server, uploadID, sessID, objectPath)
+	if err != nil {
+		return fmt.Errorf("complete multipart failed: %w", err)
+	}
+
+	return nil
+}
+
+// uploadPart sends a single multipart chunk of size bytes to the upload server.
+func (f *Fs) uploadPart(ctx context.Context, server, uploadID, sessID, objectPath string, partNo int, r io.ReadSeeker, size int64) error {
+	opts := rest.Opts{
+		Method:  "PUT",
+		RootURL: server,
+		Parameters: url.Values{
+			"partNumber": {strconv.Itoa(partNo)},
+			"uploadId":   {uploadID},
+		},
+		Body:          r,
+		ContentLength: &size,
+		ExtraHeaders: map[string]string{
+			"X-RC-Upload-Id": uploadID,
+			"X-RC-Part-No":   strconv.Itoa(partNo),
+			"X-Sess-ID":      sessID,
+			"X-Object-Path":  objectPath,
+		},
+		NoResponse: true,
+	}
+	return f.pacer.Call(func() (bool, error) {
+		// rewind the pooled buffer so each attempt sends the whole chunk
+		_, err := r.Seek(0, io.SeekStart)
+		if err != nil {
+			return false, err
+		}
+		resp, err := f.srv.Call(ctx, &opts)
+		if err != nil {
+			if resp != nil {
+				return shouldRetryHTTP(resp.StatusCode), fmt.Errorf("uploadPart failed: %w", err)
+			}
+			return shouldRetry(err), err
+		}
+		return false, nil
+	})
+}
 
 // uploadFile uploads a file to FileLu
 func (f *Fs) uploadFile(ctx context.Context, fileContent io.Reader, fileFullPath string) error {
@@ -68,9 +173,15 @@ func (f *Fs) uploadFile(ctx context.Context, fileContent io.Reader, fileFullPath
 	return nil
 }
 
-// getUploadServer gets the upload server URL with proper key authentication
 func (f *Fs) getUploadServer(ctx context.Context) (string, string, error) {
-	apiURL := fmt.Sprintf("%s/upload/server?key=%s", f.endpoint, url.QueryEscape(f.opt.Key))
+
+	opts := rest.Opts{
+		Method: "GET",
+		Path:   "/upload/server",
+		Parameters: url.Values{
+			"key": {f.opt.Key},
+		},
+	}
 
 	var result struct {
 		Status int    `json:"status"`
@@ -80,34 +191,19 @@ func (f *Fs) getUploadServer(ctx context.Context) (string, string, error) {
 	}
 
 	err := f.pacer.Call(func() (bool, error) {
-		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-		if err != nil {
-			return false, fmt.Errorf("failed to create request: %w", err)
-		}
-
-		resp, err := f.client.Do(req)
+		_, err := f.srv.CallJSON(ctx, &opts, nil, &result)
 		if err != nil {
 			return shouldRetry(err), fmt.Errorf("failed to get upload server: %w", err)
 		}
-		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				fs.Logf(nil, "Failed to close response body: %v", err)
-			}
-		}()
-
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return false, fmt.Errorf("error decoding response: %w", err)
-		}
-
-		if result.Status != 200 {
-			return false, fmt.Errorf("API error: %s", result.Msg)
-		}
-
-		return shouldRetryHTTP(resp.StatusCode), nil
+		return false, nil
 	})
 
 	if err != nil {
 		return "", "", err
+	}
+
+	if result.Status != 200 {
+		return "", "", fmt.Errorf("API error: %s", result.Msg)
 	}
 
 	return result.Result, result.SessID, nil

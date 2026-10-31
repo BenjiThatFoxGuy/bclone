@@ -40,8 +40,10 @@ import (
 
 // File represents a file or a symlink
 type File struct {
-	inode uint64       // inode number - read only
-	size  atomic.Int64 // size of file
+	aux                   // values attached by users of the VFS
+	inode uint64          // inode number - read only
+	size  atomic.Int64    // size of file
+	ctx   context.Context // context for VFS operations - read only
 
 	muRW sync.Mutex // synchronize RWFileHandle.openPending(), RWFileHandle.close() and File.Remove
 
@@ -54,7 +56,6 @@ type File struct {
 	virtualModTime   *time.Time                      // modtime for backends with Precision == fs.ModTimeNotSupported
 	pendingModTime   time.Time                       // will be applied once o becomes available, i.e. after file was written
 	pendingRenameFun func(ctx context.Context) error // will be run/renamed after all writers close
-	sys              atomic.Value                    // user defined info to be attached here
 	nwriters         atomic.Int32                    // len(writers)
 	appendMode       bool                            // file was opened with O_APPEND
 	isLink           bool                            // file represents a symlink
@@ -70,6 +71,7 @@ func newFile(d *Dir, dPath string, o fs.Object, leaf string) *File {
 		o:     o,
 		leaf:  leaf,
 		inode: newInode(),
+		ctx:   d.vfs.ctx,
 	}
 	if o != nil {
 		f.size.Store(o.Size())
@@ -182,16 +184,6 @@ func (f *File) CachePath() string {
 	return f._cachePath()
 }
 
-// Sys returns underlying data source (can be nil) - satisfies Node interface
-func (f *File) Sys() any {
-	return f.sys.Load()
-}
-
-// SetSys sets the underlying data source (can be nil) - satisfies Node interface
-func (f *File) SetSys(x any) {
-	f.sys.Store(x)
-}
-
 // Inode returns the inode number - satisfies Node interface
 func (f *File) Inode() uint64 {
 	return f.inode
@@ -220,7 +212,7 @@ func (f *File) applyPendingRename() {
 		return
 	}
 	fs.Debugf(f.Path(), "Running delayed rename now")
-	if err := fun(context.TODO()); err != nil {
+	if err := fun(f.ctx); err != nil {
 		fs.Errorf(f.Path(), "delayed File.Rename error: %v", err)
 	}
 }
@@ -415,7 +407,7 @@ func (f *File) ModTime() (modTime time.Time) {
 	if o == nil {
 		return time.Now()
 	}
-	return o.ModTime(context.TODO())
+	return o.ModTime(f.ctx)
 }
 
 // nonNegative returns 0 if i is -ve, i otherwise
@@ -491,7 +483,7 @@ func (f *File) _applyPendingModTime() error {
 		return errors.New("cannot apply ModTime, file object is not available")
 	}
 
-	dt := f.pendingModTime.Sub(f.o.ModTime(context.Background()))
+	dt := f.pendingModTime.Sub(f.o.ModTime(f.ctx))
 	modifyWindow := f.o.Fs().Precision()
 	if dt < modifyWindow && dt > -modifyWindow {
 		fs.Debugf(f.o, "Not setting pending mod time %v as it is already set", f.pendingModTime)
@@ -499,10 +491,15 @@ func (f *File) _applyPendingModTime() error {
 	}
 
 	// set the time of the object
-	err := f.o.SetModTime(context.TODO(), f.pendingModTime)
+	err := f.o.SetModTime(f.ctx, f.pendingModTime)
 	switch err {
 	case nil:
 		fs.Debugf(f.o, "Applied pending mod time %v OK", f.pendingModTime)
+		// The cache fingerprint predates the new modtime, so refresh
+		// it or the next open discards the cached data as stale.
+		if f.d.vfs.cache != nil && f.d.vfs.cache.Exists(f._cachePath()) {
+			f.d.vfs.cache.SetModTime(f._cachePath(), f.pendingModTime)
+		}
 	case fs.ErrorCantSetModTime, fs.ErrorCantSetModTimeWithoutDelete:
 		// do nothing, in order to not break "touch somefile" if it exists already
 	default:
@@ -682,7 +679,7 @@ func (f *File) Remove() (err error) {
 	f.muRW.Lock() // muRW must be locked before mu to avoid
 	f.mu.Lock()   // deadlock in RWFileHandle.openPending and .close
 	if f.o != nil {
-		err = f.o.Remove(context.TODO())
+		err = f.o.Remove(f.ctx)
 	}
 	f.mu.Unlock()
 	f.muRW.Unlock()

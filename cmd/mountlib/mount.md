@@ -1,7 +1,8 @@
 Rclone @ allows Linux, FreeBSD, macOS and Windows to
 mount any of Rclone's cloud storage systems as a file system with FUSE.
 
-First set up your remote using `rclone config`. Check it works with `rclone ls` etc.
+First set up your remote using `rclone config`. Check it works with `rclone ls`
+etc.
 
 On Linux and macOS, you can run mount in either foreground or background (aka
 daemon) mode. Mount runs in foreground mode by default. Use the `--daemon` flag
@@ -16,7 +17,7 @@ mount, waits until success or timeout and exits with appropriate code
 On Linux/macOS/FreeBSD start the mount like this, where `/path/to/local/mount`
 is an **empty** **existing** directory:
 
-```sh
+```console
 rclone @ remote:path/to/files /path/to/local/mount
 ```
 
@@ -29,10 +30,10 @@ The following examples will mount to an automatically assigned drive,
 to specific drive letter `X:`, to path `C:\path\parent\mount`
 (where parent directory or drive must exist, and mount must **not** exist,
 and is not supported when [mounting as a network drive](#mounting-modes-on-windows)),
-and the last example will mount as network share `\\cloud\remote` and map it to an
-automatically assigned drive:
+and the last example will mount as network share `\\cloud\remote` and map it to
+an automatically assigned drive:
 
-```sh
+```console
 rclone @ remote:path/to/files *
 rclone @ remote:path/to/files X:
 rclone @ remote:path/to/files C:\path\parent\mount
@@ -44,7 +45,7 @@ a SIGINT or SIGTERM signal, the mount should be automatically stopped.
 
 When running in background mode the user will have to stop the mount manually:
 
-```sh
+```console
 # Linux
 fusermount -u /path/to/local/mount
 #... or on some systems
@@ -65,8 +66,8 @@ at all, then 1 PiB is set as both the total and the free size.
 
 ### Installing on Windows
 
-To run rclone @ on Windows, you will need to
-download and install [WinFsp](http://www.secfs.net/winfsp/).
+To run `rclone @ on Windows`, you will need to
+download and install [WinFsp](https://winfsp.dev).
 
 [WinFsp](https://github.com/winfsp/winfsp) is an open-source
 Windows File System Proxy which makes it easy to write user space file
@@ -96,7 +97,7 @@ directory or drive. Using the special value `*` will tell rclone to
 automatically assign the next available drive letter, starting with Z: and moving
 backward. Examples:
 
-```sh
+```console
 rclone @ remote:path/to/files *
 rclone @ remote:path/to/files X:
 rclone @ remote:path/to/files C:\path\parent\mount
@@ -111,7 +112,7 @@ to your @ command. Mounting to a directory path is not supported in
 this mode, it is a limitation Windows imposes on junctions, so the remote must always
 be mounted to a drive letter.
 
-```sh
+```console
 rclone @ remote:path/to/files X: --network-mode
 ```
 
@@ -129,18 +130,18 @@ volume label for the mapped drive, shown in Windows Explorer etc, while the comp
 If you specify a full network share UNC path with `--volname`, this will implicitly
 set the `--network-mode` option, so the following two examples have same result:
 
-```sh
+```console
 rclone @ remote:path/to/files X: --network-mode
 rclone @ remote:path/to/files X: --volname \\server\share
 ```
 
 You may also specify the network share UNC path as the mountpoint itself. Then rclone
 will automatically assign a drive letter, same as with `*` and use that as
-mountpoint, and instead use the UNC path specified as the volume name, as if it were
-specified with the `--volname` option. This will also implicitly set
+mountpoint, and instead use the UNC path specified as the volume name, as if it
+were specified with the `--volname` option. This will also implicitly set
 the `--network-mode` option. This means the following two examples have same result:
 
-```sh
+```console
 rclone @ remote:path/to/files \\cloud\remote
 rclone @ remote:path/to/files * --volname \\cloud\remote
 ```
@@ -268,7 +269,7 @@ does not suffer from the same limitations.
 
 Mounting on macOS can be done either via [built-in NFS server](/commands/rclone_serve_nfs/),
 [macFUSE](https://osxfuse.github.io/) (also known as osxfuse) or
-[FUSE-T](https://www.fuse-t.org/).macFUSE is a traditional FUSE driver utilizing
+[FUSE-T](https://www.fuse-t.org/). macFUSE is a traditional FUSE driver utilizing
 a macOS kernel extension (kext). FUSE-T is an alternative FUSE system which
 "mounts" via an NFSv4 local server.
 
@@ -278,6 +279,11 @@ It is highly recommended to keep the default of `--no-unicode-normalization=fals
 for all `mount` and `serve` commands on macOS. For details, see [vfs-case-sensitivity](https://rclone.org/commands/rclone_mount/#vfs-case-sensitivity).
 
 #### NFS mount
+
+For macOS (and other platforms where this path is supported), prefer the dedicated
+[rclone nfsmount](/commands/rclone_nfsmount/) command. It starts the NFS server and
+performs the mount for you. `rclone mount` itself still uses FUSE (macFUSE/FUSE-T)
+and does not switch to NFS via a flag.
 
 This method spins up an NFS server using [serve nfs](/commands/rclone_serve_nfs/)
 command and mounts it to the specified mountpoint. If you run this in background
@@ -296,7 +302,7 @@ from the website, rclone will locate the macFUSE libraries without any further i
 If however, macFUSE is installed using the [macports](https://www.macports.org/)
 package manager, the following addition steps are required.
 
-```sh
+```console
 sudo mkdir /usr/local/lib
 cd /usr/local/lib
 sudo ln -s /opt/local/lib/libfuse.2.dylib
@@ -311,18 +317,87 @@ current as  of FUSE-T version 1.0.14.
 
 As per the [FUSE-T wiki](https://github.com/macos-fuse-t/fuse-t/wiki#caveats):
 
-> File access and modification times cannot be set separately as it seems to be an
-> issue with the NFS client which always modifies both. Can be reproduced with
-> 'touch -m' and 'touch -a' commands
+> File access and modification times cannot be set separately as it seems to be
+> an issue with the NFS client which always modifies both. Can be reproduced
+> with `touch -m` and `touch -a` commands
 
-This means that viewing files with various tools, notably macOS Finder, will cause
-rlcone to update the modification time of the file. This may make rclone upload a
-full new copy of the file.
+This means that viewing files with various tools, notably macOS Finder, will
+cause rlcone to update the modification time of the file. This may make rclone
+upload a full new copy of the file.
 
 ##### Read Only mounts
 
 When mounting with `--read-only`, attempts to write to files will fail *silently*
 as opposed to with a clear warning as in macFUSE.
+
+### Mounting on Linux
+
+On newer versions of Ubuntu, you may encounter the following error when running
+`rclone mount`:
+
+> NOTICE: mount helper error: fusermount3: mount failed: Permission denied
+> CRITICAL: Fatal error: failed to mount FUSE fs: fusermount: exit status 1
+
+This may be due to newer [Apparmor](https://wiki.ubuntu.com/AppArmor) restrictions,
+which can be disabled with `sudo aa-disable /usr/bin/fusermount3` (you may need
+to `sudo apt install apparmor-utils` beforehand).
+
+### Mounting on OpenBSD
+
+`rclone nfsmount` works on OpenBSD by spinning up the [serve nfs](/commands/rclone_serve_nfs/)
+server and mounting it with the system `mount_nfs(8)`, the same approach used
+for the NFS mount method on macOS. There is no FUSE-based mount option on
+OpenBSD, so `nfsmount` is the only way to mount rclone remotes as a local
+file system there.
+
+#### portmap registration
+
+OpenBSD's kernel NFS client locates `mountd` through the system portmapper
+rather than connecting to a fixed port, so rclone's in-process NFS server
+needs to be registered with portmap before it can be mounted. Start the
+`serve nfs` server on a fixed port, stop the system NFS services so they
+don't conflict with it, then register that port with portmap for both the
+`nfs` and `mountd` RPC programs (this is the recipe from
+[hjicks in #8578](https://github.com/rclone/rclone/issues/8578#issuecomment-2799229652)):
+
+```console
+rclone serve nfs --addr localhost:<PORT> remote:path
+
+doas rcctl stop nfsd portmap
+doas pkill -9 mountd   # mountd can't be stopped via rcctl(8)
+doas rcctl -f start portmap
+doas rpcinfo -s nfs 3 <PORT>
+doas rpcinfo -s mountd 3 <PORT>
+```
+
+Replace `<PORT>` with the port passed to `--addr`. Port 2049 works too, but
+needs either running rclone as root or adjusting `sysctl(8)` at
+securelevel 0, so a non-privileged port is simpler for testing.
+
+#### Use `mount_nfs -T`, not `mount`
+
+Mount the exported NFS share directly with `mount_nfs(8)` using the `-T`
+flag to force TCP, rather than the generic `mount(8)` wrapper - OpenBSD's
+`mount(8)` does not understand `-T` and rejects it with `unknown option -- T`:
+
+```console
+mount_nfs -T localhost:/ /path/to/local/mount
+```
+
+`rclone nfsmount` does this for you automatically on OpenBSD (it calls
+`mount_nfs` directly with `-T` instead of going through `mount`), so this
+is only needed if you are mounting the `serve nfs` export by hand.
+
+#### AUTH_UNIX and existing limitations
+
+OpenBSD's (and the other BSDs') kernel NFS client requires the server to
+offer the `AUTH_UNIX` authentication flavor during the MOUNT RPC handshake;
+a server that only offers `AUTH_NULL` is rejected with
+`mount_nfs: can't access /: Authentication error`. rclone's NFS server
+advertises `AUTH_UNIX` for this reason, though it does not implement any
+per-user access control on top of it - see
+[issue #8578](https://github.com/rclone/rclone/issues/8578) for the
+background on this and for the current state of OpenBSD support.
 
 ### Limitations
 
@@ -424,7 +499,7 @@ rclone will detect it and translate command-line arguments appropriately.
 
 Now you can run classic mounts like this:
 
-```sh
+```console
 mount sftp1:subdir /mnt/data -t rclone -o vfs_cache_mode=writes,sftp_key_file=/path/to/pem
 ```
 
@@ -456,7 +531,7 @@ WantedBy=multi-user.target
 
 or add in `/etc/fstab` a line like
 
-```sh
+```console
 sftp1:subdir /mnt/data rclone rw,noauto,nofail,_netdev,x-systemd.automount,args2env,vfs_cache_mode=writes,config=/etc/rclone.conf,cache_dir=/var/cache/rclone 0 0
 ```
 

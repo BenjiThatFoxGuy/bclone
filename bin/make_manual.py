@@ -8,7 +8,7 @@ import os
 import re
 import time
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 
 docpath = "docs/content"
 outfile = "MANUAL.md"
@@ -23,6 +23,7 @@ docs = [
     "gui.md",
     "rc.md",
     "overview.md",
+    "tiers.md",
     "flags.md",
     "docker.md",
     "bisync.md",
@@ -32,6 +33,7 @@ docs = [
     "fichier.md",
     "alias.md",
     "s3.md",
+    "archive.md",
     "b2.md",
     "box.md",
     "cache.md",
@@ -42,9 +44,12 @@ docs = [
     "compress.md",
     "combine.md",
     "doi.md",
+    "dosya.md",
+    "drime.md",
     "dropbox.md",
     "filefabric.md",
     "filelu.md",
+    "filen.md",
     "filescom.md",
     "ftp.md",
     "gofile.md",
@@ -52,13 +57,16 @@ docs = [
     "drive.md",
     "googlephotos.md",
     "hasher.md",
+    "huaweidrive.md",
     "hdfs.md",
     "hidrive.md",
     "http.md",
     "imagekit.md",
     "iclouddrive.md",
     "internetarchive.md",
+    "internxt.md",
     "jottacloud.md",
+    "kdrive.md",
     "koofr.md",
     "linkbox.md",
     "mailru.md",
@@ -83,12 +91,12 @@ docs = [
     "protondrive.md",
     "seafile.md",
     "sftp.md",
+    "shade.md",
     "smb.md",
     "storj.md",
     "sugarsync.md",
     "terabox.md",
     "ulozto.md",
-    "uptobox.md",
     "union.md",
     "webdav.md",
     "yandex.md",
@@ -131,6 +139,7 @@ ignore_docs = [
     "privacy.md",
     "sponsor.md",
     "amazonclouddrive.md",
+    "backends.md",              # Makes JSON confusingly
 ]
 
 def read_doc(doc):
@@ -140,7 +149,7 @@ def read_doc(doc):
         contents = fd.read()
     parts = contents.split("---\n", 2)
     if len(parts) != 3:
-        raise ValueError("Couldn't find --- markers: found %d parts" % len(parts))
+        raise ValueError(f"{doc}: Couldn't find --- markers: found {len(parts)} parts")
     contents = parts[2].strip()+"\n\n"
     # Remove icons
     contents = re.sub(r'<i class="fa.*?</i>\s*', "", contents)
@@ -152,7 +161,7 @@ def read_doc(doc):
     # Make [...](/links/) absolute
     contents = re.sub(r'\]\((\/.*?\/(#.*)?)\)', r"](https://rclone.org\1)", contents)
     # Add additional links on the front page
-    contents = re.sub(r'\{\{< rem MAINPAGELINK >\}\}', "- [Donate.](https://rclone.org/donate/)", contents)
+    contents = re.sub(r'<!-- MAINPAGELINK -->', "- [Donate.](https://rclone.org/donate/)", contents)
     # Interpret provider shortcode
     # {{< provider name="Amazon S3" home="https://aws.amazon.com/s3/" config="/s3/" >}}
     contents = re.sub(r'\{\{<\s*provider.*?name="(.*?)".*?>\}\}', r"- \1", contents)
@@ -194,8 +203,8 @@ def read_commands(docpath):
 def main():
     check_docs(docpath)
     command_docs = read_commands(docpath).replace("\\", "\\\\") # escape \ so we can use command_docs in re.sub
-    build_date = datetime.utcfromtimestamp(
-            int(os.environ.get('SOURCE_DATE_EPOCH', time.time())))
+    build_date = datetime.fromtimestamp(
+            int(os.environ.get('SOURCE_DATE_EPOCH', time.time())), timezone.utc)
     help_output = subprocess.check_output(["rclone", "help"]).decode("utf-8")
     with open(outfile, "w") as out:
         out.write("""\

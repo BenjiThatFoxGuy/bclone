@@ -15,6 +15,7 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fstest"
 	"github.com/rclone/rclone/lib/random"
+	"github.com/rclone/rclone/lib/ranges"
 	"github.com/rclone/rclone/lib/readers"
 	"github.com/rclone/rclone/vfs/vfscommon"
 	"github.com/stretchr/testify/assert"
@@ -31,6 +32,9 @@ func newItemTestCache(t *testing.T) (r *fstest.Run, c *Cache) {
 
 	// Disable synchronous write
 	opt.WriteBack = 0
+
+	// Disable handle caching so existing tests get immediate close behavior
+	opt.HandleCaching = 0
 
 	return newTestCacheOpt(t, opt)
 }
@@ -175,6 +179,20 @@ func TestItemTruncateExisting(t *testing.T) {
 	require.NoError(t, item.Close(nil))
 
 	checkObject(t, r, "existing", contents[:40]+zeroes[:20])
+}
+
+func TestItemTruncateShrinkUncached(t *testing.T) {
+	r, c := newItemTestCache(t)
+
+	contents, obj, item := newFile(t, r, c, "existing")
+
+	// Shrink a file which hasn't been read so the downloader has to
+	// fetch the kept part of the file on close.
+	require.NoError(t, item.Open(obj))
+	require.NoError(t, item.Truncate(40))
+	require.NoError(t, item.Close(nil))
+
+	checkObject(t, r, "existing", contents[:40])
 }
 
 func TestItemReadAt(t *testing.T) {
@@ -442,6 +460,59 @@ func TestItemReloadCacheStale(t *testing.T) {
 	checkObject(t, r, "existing", "HELLO"+contents2[5:])
 }
 
+// TestItemReloadDirtyBeyondRemote checks that reloading a dirty cache
+// item whose cache file has grown larger than the remote object
+// recovers what it can from the cache file instead of failing with
+// "invalid seek position".
+func TestItemReloadDirtyBeyondRemote(t *testing.T) {
+	r, c := newItemTestCache(t)
+
+	// Small remote object (100 bytes)
+	_, obj, item := newFile(t, r, c, "existing")
+
+	// Open it and write over and past the end of the remote object,
+	// growing the cache file to 200 bytes and making it dirty.
+	require.NoError(t, item.Open(obj))
+	newContents := random.String(200)
+	n, err := item.WriteAt([]byte(newContents), 0)
+	require.NoError(t, err)
+	assert.Equal(t, 200, n)
+	assert.True(t, item.IsDirty())
+
+	size, err := item.GetSize()
+	require.NoError(t, err)
+	assert.Equal(t, int64(200), size)
+
+	// Simulate an unclean shutdown: the cache file on disk is fully grown
+	// but the final range-metadata update was never persisted, so Rs
+	// under-reports the parts of the file that are present. Here the
+	// remaining present range [0,150) ends beyond the 100 byte remote
+	// object, so the missing range [150,200) starts past the end of the
+	// remote object.
+	item.mu.Lock()
+	item.info.Rs = item.info.Rs.Intersection(ranges.Range{Pos: 0, Size: 150})
+	require.NoError(t, item._save())
+	require.NoError(t, item.fd.Close())
+	item.fd = nil
+	item.mu.Unlock()
+
+	// Drop the item so reload has to reload the metadata from disk
+	c.mu.Lock()
+	delete(c.item, item.name)
+	c.mu.Unlock()
+
+	// Reload the dirty item. Before the fix this failed trying to download
+	// the missing [150,200) range from the 100 byte remote object with
+	// "invalid seek position".
+	item2, _ := c._get("existing")
+	require.NoError(t, item2.reload(context.Background()))
+	assert.False(t, item2.IsDirty())
+
+	// The grown contents are recovered from the cache file and written
+	// back to the remote.
+	checkObject(t, r, "existing", newContents)
+}
+
 func TestItemReadWrite(t *testing.T) {
 	r, c := newItemTestCache(t)
 	const (
@@ -542,9 +613,7 @@ func TestItemReadWrite(t *testing.T) {
 		assert.False(t, item.present())
 		var wg sync.WaitGroup
 		for range 8 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				in := readers.NewPatternReader(size)
 				buf := make([]byte, 1024*1024)
 				buf2 := make([]byte, 1024*1024)
@@ -553,7 +622,7 @@ func TestItemReadWrite(t *testing.T) {
 					offset := max(rand.Int63n(size+2*int64(blockSize))-int64(blockSize), 0)
 					_, _ = readCheckBuf(t, in, buf, buf2, item, offset, blockSize)
 				}
-			}()
+			})
 		}
 		wg.Wait()
 		require.NoError(t, item.Close(nil))
@@ -581,4 +650,222 @@ func TestItemReadWrite(t *testing.T) {
 		require.NoError(t, item.Close(nil))
 		assert.False(t, item.remove(fileName))
 	})
+}
+
+func newItemTestCacheHandleCaching(t *testing.T, handleCaching time.Duration) (r *fstest.Run, c *Cache) {
+	opt := vfscommon.Opt
+
+	// Disable the cache cleaner as it interferes with these tests
+	opt.CachePollInterval = 0
+
+	// Disable synchronous write
+	opt.WriteBack = 0
+
+	// Set handle caching grace period
+	opt.HandleCaching = fs.Duration(handleCaching)
+
+	return newTestCacheOpt(t, opt)
+}
+
+func TestItemHandleCaching(t *testing.T) {
+	r, c := newItemTestCacheHandleCaching(t, 1*time.Second)
+
+	contents, obj, item := newFile(t, r, c, "existing")
+
+	// Open, read, and close the item
+	require.NoError(t, item.Open(obj))
+
+	buf := make([]byte, 10)
+	n, err := item.ReadAt(buf, 0)
+	assert.Equal(t, 10, n)
+	require.NoError(t, err)
+	assert.Equal(t, contents[:10], string(buf[:n]))
+
+	require.NoError(t, item.Close(nil))
+
+	// After close, grace period should keep fd and downloaders alive
+	item.mu.Lock()
+	assert.NotNil(t, item.fd, "fd should still be open during grace period")
+	assert.NotNil(t, item.downloaders, "downloaders should still be alive during grace period")
+	assert.NotNil(t, item.graceTimer, "grace timer should be set")
+	item.mu.Unlock()
+
+	// Re-open the item - should reuse existing fd and downloaders
+	require.NoError(t, item.Open(obj))
+
+	// Read data to verify it works
+	n, err = item.ReadAt(buf, 10)
+	assert.Equal(t, 10, n)
+	require.NoError(t, err)
+	assert.Equal(t, contents[10:20], string(buf[:n]))
+
+	// Close again
+	require.NoError(t, item.Close(nil))
+
+	// Wait for grace period to expire
+	time.Sleep(1500 * time.Millisecond)
+
+	// After grace period, fd and downloaders should be cleaned up
+	item.mu.Lock()
+	assert.Nil(t, item.fd, "fd should be closed after grace period")
+	assert.Nil(t, item.downloaders, "downloaders should be closed after grace period")
+	assert.Nil(t, item.graceTimer, "grace timer should be nil after expiry")
+	item.mu.Unlock()
+}
+
+func TestItemHandleCachingDisabled(t *testing.T) {
+	r, c := newItemTestCacheHandleCaching(t, 0)
+
+	contents, obj, item := newFile(t, r, c, "existing")
+	_ = contents
+
+	// Open and close the item
+	require.NoError(t, item.Open(obj))
+	require.NoError(t, item.Close(nil))
+
+	// With handle caching disabled, fd and downloaders should be immediately closed
+	item.mu.Lock()
+	assert.Nil(t, item.fd, "fd should be closed immediately when handle caching disabled")
+	assert.Nil(t, item.downloaders, "downloaders should be closed immediately when handle caching disabled")
+	assert.Nil(t, item.graceTimer, "grace timer should not be set when handle caching disabled")
+	item.mu.Unlock()
+}
+
+func TestItemHandleCachingReset(t *testing.T) {
+	r, c := newItemTestCacheHandleCaching(t, 1*time.Second)
+
+	_, obj, item := newFile(t, r, c, "existing")
+
+	// Open, read (to instantiate cache), and close the item
+	require.NoError(t, item.Open(obj))
+
+	buf := make([]byte, 10)
+	_, err := item.ReadAt(buf, 0)
+	require.NoError(t, err)
+
+	require.NoError(t, item.Close(nil))
+
+	// Grace timer should be active
+	item.mu.Lock()
+	assert.NotNil(t, item.graceTimer, "grace timer should be set")
+	item.mu.Unlock()
+
+	// Reset should skip the item during grace period
+	rr, _, err := item.Reset()
+	require.NoError(t, err)
+	assert.Equal(t, SkippedGrace, rr)
+
+	// Grace timer should still be active
+	item.mu.Lock()
+	assert.NotNil(t, item.graceTimer, "grace timer should still be set after skipped reset")
+	item.mu.Unlock()
+
+	// Wait for grace period to expire then reset should remove the item
+	time.Sleep(1500 * time.Millisecond)
+
+	rr, _, err = item.Reset()
+	require.NoError(t, err)
+	assert.Equal(t, RemovedNotInUse, rr)
+}
+
+// TestItemHandleCachingReopenDuringGraceClose reproduces a race between
+// reopening an item and the grace-period close firing for it.
+//
+// closeAfterGrace clears the grace timer and then runs the actual close,
+// which temporarily drops item.mu while it tears down the downloaders -
+// at that point the file handle is still open. A reopen landing in that
+// window used to see no grace timer and a live fd and fail _createFile
+// with "internal error: didn't Close file".
+func TestItemHandleCachingReopenDuringGraceClose(t *testing.T) {
+	r, c := newItemTestCacheHandleCaching(t, 10*time.Second)
+
+	_, obj, item := newFile(t, r, c, "existing")
+	buf := make([]byte, 1)
+
+	const iterations = 50
+	for i := range iterations {
+		// Open, read (to create a downloader) and close so a grace
+		// timer is pending with the fd and downloaders still alive.
+		require.NoError(t, item.Open(obj))
+		_, err := item.ReadAt(buf, 0)
+		require.NoError(t, err)
+		require.NoError(t, item.Close(nil))
+
+		// Drive the grace close ourselves so we can race it against a
+		// reopen. Hold item.mu and park both the close (A) and the
+		// reopen (B) on the lock with A queued first. When we release,
+		// A runs the close, which drops item.mu to tear down the
+		// downloaders, and B - already waiting - grabs it in that
+		// window and observes the still-open fd.
+		item.mu.Lock()
+		require.NotNil(t, item.graceTimer, "grace timer should be set after close")
+		item.graceTimer.Stop()
+
+		var openErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		startA := make(chan struct{})
+		startB := make(chan struct{})
+		go func() {
+			defer wg.Done()
+			<-startA
+			item.closeAfterGrace()
+		}()
+		go func() {
+			defer wg.Done()
+			<-startB
+			openErr = item.Open(obj)
+		}()
+		close(startA)
+		time.Sleep(time.Millisecond) // let A park on item.mu first
+		close(startB)
+		time.Sleep(time.Millisecond) // let B park on item.mu
+		item.mu.Unlock()
+		wg.Wait()
+
+		require.NoError(t, openErr, "reopen racing a grace-period close failed on iteration %d", i)
+
+		// Drop the handle from the successful reopen so the next
+		// iteration starts from a closed item.
+		require.NoError(t, item.Close(nil))
+	}
+
+	// Stop the grace timer left pending by the final close.
+	item.mu.Lock()
+	if item.graceTimer != nil {
+		item.graceTimer.Stop()
+	}
+	item.mu.Unlock()
+}
+
+// Reopening in the grace period after a remote modtime change must
+// read the remote data, not zeros from an unfetched recreated file.
+func TestItemHandleCachingStaleReopenReadsRemote(t *testing.T) {
+	r, c := newItemTestCacheHandleCaching(t, 10*time.Second)
+	ctx := context.Background()
+
+	contents, obj, item := newFile(t, r, c, "existing")
+
+	require.NoError(t, item.Open(obj))
+	buf := make([]byte, len(contents))
+	n, err := item.ReadAt(buf, 0)
+	require.NoError(t, err)
+	require.Equal(t, contents, string(buf[:n]))
+	require.NoError(t, item.Close(nil))
+
+	require.NoError(t, obj.SetModTime(ctx, time.Now().Add(time.Hour)))
+	obj, err = r.Fremote.NewObject(ctx, "existing")
+	require.NoError(t, err)
+
+	require.NoError(t, item.Open(obj))
+	defer func() { require.NoError(t, item.Close(nil)) }()
+
+	size, err := item.GetSize()
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(contents)), size)
+
+	buf = make([]byte, len(contents))
+	n, err = item.ReadAt(buf, 0)
+	require.NoError(t, err)
+	assert.Equal(t, contents, string(buf[:n]))
 }

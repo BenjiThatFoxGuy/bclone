@@ -84,9 +84,23 @@ func testObjectInfo(t *testing.T, f *Fs, wrap bool) {
 
 	// Test ObjectInfo.Hash
 	wantHash := md5.Sum(outBuf.Bytes())
+	if f.opt.NoDataEncryption {
+		// If the data isn't encrypted, the hash should be that of the plaintext
+		wantHash = md5.Sum([]byte(contents))
+	}
 	gotHash, err := src.Hash(ctx, hash.MD5)
 	require.NoError(t, err)
 	assert.Equal(t, fmt.Sprintf("%x", wantHash), gotHash)
+}
+
+// Test ObjectInfo.Hash doesn't panic when the source is an
+// fs.OverrideRemote which wraps an fs.ObjectInfo that isn't an fs.Object
+func TestObjectInfoHashOverrideRemoteNotObject(t *testing.T) {
+	src := object.NewStaticObjectInfo("file", time.Now(), 3, true, nil, nil)
+	oi := (&Fs{}).newObjectInfo(fs.NewOverrideRemote(src, "new_remote"), nonce{})
+	gotHash, err := oi.Hash(context.Background(), hash.MD5)
+	require.NoError(t, err)
+	assert.Equal(t, "", gotHash)
 }
 
 func testComputeHash(t *testing.T, f *Fs) {

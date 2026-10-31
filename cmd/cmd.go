@@ -361,9 +361,7 @@ func StartStats() func() {
 	}
 	stopStats := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ticker := time.NewTicker(*statsInterval)
 		for {
 			select {
@@ -374,10 +372,31 @@ func StartStats() func() {
 				return
 			}
 		}
-	}()
+	})
 	return func() {
 		close(stopStats)
 		wg.Wait()
+	}
+}
+
+var (
+	rcServer      *rcserver.Server
+	metricsServer *rcserver.MetricsServer
+)
+
+// StopRemoteControl shuts down the remote control and metrics servers started by initConfig.
+func StopRemoteControl() {
+	if rcServer != nil {
+		if err := rcServer.Shutdown(); err != nil {
+			fs.Errorf(nil, "Failed to stop remote control: %v", err)
+		}
+		rcServer = nil
+	}
+	if metricsServer != nil {
+		if err := metricsServer.Shutdown(); err != nil {
+			fs.Errorf(nil, "Failed to stop metrics server: %v", err)
+		}
+		metricsServer = nil
 	}
 }
 
@@ -424,14 +443,14 @@ func initConfig() {
 	}
 
 	// Start the remote control server if configured
-	_, err = rcserver.Start(ctx, &rc.Opt)
+	rcServer, err = rcserver.Start(ctx, &rc.Opt)
 	if err != nil {
 		fs.Fatalf(nil, "Failed to start remote control: %v", err)
 	}
 
 	// Start the metrics server if configured and not running the "rc" command
 	if len(os.Args) >= 2 && os.Args[1] != "rc" {
-		_, err = rcserver.MetricsStart(ctx, &rc.Opt)
+		metricsServer, err = rcserver.MetricsStart(ctx, &rc.Opt)
 		if err != nil {
 			fs.Fatalf(nil, "Failed to start metrics server: %v", err)
 		}
@@ -538,6 +557,9 @@ func AddBackendFlags() {
 func Main() {
 	setupRootCommand(Root)
 	AddBackendFlags()
+	if err := registerEnumFlagCompletions(Root); err != nil {
+		fs.Fatalf(nil, "Failed to register flag completions: %v", err)
+	}
 	if err := Root.Execute(); err != nil {
 		if strings.HasPrefix(err.Error(), "unknown command") && selfupdateEnabled {
 			Root.PrintErrf("You could use '%s selfupdate' to get latest features.\n\n", Root.CommandPath())

@@ -15,31 +15,34 @@ recurse by default.  Use the `-R` flag to recurse.
 This command lists the total size of the directory (if known, -1 if
 not), the modification time (if known, the current time if not), the
 number of objects in the directory (if known, -1 if not) and the name
-of the directory, Eg
+of the directory, E.g.
 
-    $ rclone lsd swift:
-          494000 2018-04-26 08:43:20     10000 10000files
-              65 2018-04-26 08:43:20         1 1File
+```console
+$ rclone lsd swift:
+      494000 2018-04-26 08:43:20     10000 10000files
+          65 2018-04-26 08:43:20         1 1File
+```
 
 Or
 
-    $ rclone lsd drive:test
-              -1 2016-10-17 17:41:53        -1 1000files
-              -1 2017-01-03 14:40:54        -1 2500files
-              -1 2017-07-08 14:39:28        -1 4000files
+```console
+$ rclone lsd drive:test
+          -1 2016-10-17 17:41:53        -1 1000files
+          -1 2017-01-03 14:40:54        -1 2500files
+          -1 2017-07-08 14:39:28        -1 4000files
+```
 
 If you just want the directory names use `rclone lsf --dirs-only`.
-
 
 Any of the filtering options can be applied to this command.
 
 There are several related list commands
 
-  * `ls` to list size and path of objects only
-  * `lsl` to list modification time, size and path of objects only
-  * `lsd` to list directories only
-  * `lsf` to list objects and directories in easy to parse format
-  * `lsjson` to list objects and directories in JSON format
+- `ls` to list size and path of objects only
+- `lsl` to list modification time, size and path of objects only
+- `lsd` to list directories only
+- `lsf` to list objects and directories in easy to parse format
+- `lsjson` to list objects and directories in JSON format
 
 `ls`,`lsl`,`lsd` are designed to be human-readable.
 `lsf` is designed to be human and machine-readable.
@@ -47,12 +50,16 @@ There are several related list commands
 
 Note that `ls` and `lsl` recurse by default - use `--max-depth 1` to stop the recursion.
 
-The other list commands `lsd`,`lsf`,`lsjson` do not recurse by default - use `-R` to make them recurse.
+The other list commands `lsd`,`lsf`,`lsjson` do not recurse by default -
+use `-R` to make them recurse.
+
+List commands prefer a recursive method that uses more memory but fewer
+transactions by default. Use `--disable ListR` to suppress the behavior.
+See [`--fast-list`](/docs/#fast-list) for more details.
 
 Listing a nonexistent directory will produce an error except for
 remotes which can't have empty directories (e.g. s3, swift, or gcs -
 the bucket-based remotes).
-
 
 ```
 rclone lsd remote:path [flags]
@@ -72,13 +79,14 @@ See the [global flags page](/flags/) for global options not listed here.
 
 Flags for filtering directory listings
 
-```
+```text
       --delete-excluded                     Delete files on dest excluded from sync
       --exclude stringArray                 Exclude files matching pattern
       --exclude-from stringArray            Read file exclude patterns from file (use - to read from stdin)
       --exclude-if-present stringArray      Exclude directories if filename is present
       --files-from stringArray              Read list of source-file names from file (use - to read from stdin)
       --files-from-raw stringArray          Read list of source-file names from file without any processing of lines (use - to read from stdin)
+      --files-from0 stringArray             Read list of source-file names from file using NUL as separator (use - to read from stdin)
   -f, --filter stringArray                  Add a file filtering rule
       --filter-from stringArray             Read file filtering patterns from a file (use - to read from stdin)
       --hash-filter string                  Partition filenames by hash k/n or randomly @/n
@@ -102,12 +110,17 @@ Flags for filtering directory listings
 
 Flags for listing directories
 
-```
+```text
       --default-time Time   Time to show if modtime is unknown for files and directories (default 2000-01-01T00:00:00Z)
       --fast-list           Use recursive list if available; uses more memory but fewer transactions
 ```
 
 ## See Also
 
+<!-- markdownlint-capture -->
+<!-- markdownlint-disable ul-style line-length -->
+
 * [rclone](/commands/rclone/)	 - Show help for rclone commands, flags and backends.
 
+
+<!-- markdownlint-restore -->

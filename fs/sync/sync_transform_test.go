@@ -13,6 +13,7 @@ import (
 
 	_ "github.com/rclone/rclone/backend/all"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/filter"
 	"github.com/rclone/rclone/fs/operations"
 	"github.com/rclone/rclone/fs/walk"
@@ -24,6 +25,15 @@ import (
 )
 
 var debug = ``
+
+// newTransformRun resets the global error stats, which Sync consults
+// before deleting files, so that an error left over from an earlier
+// test in this binary doesn't disable deletions in this one, then
+// creates a new test run.
+func newTransformRun(t *testing.T) *fstest.Run {
+	accounting.GlobalStats().ResetCounters()
+	return fstest.NewRun(t)
+}
 
 func TestTransform(t *testing.T) {
 	type args struct {
@@ -93,7 +103,7 @@ func TestTransform(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := fstest.NewRun(t)
+			r := newTransformRun(t)
 			defer r.Finalise()
 
 			ctx := context.Background()
@@ -227,7 +237,7 @@ func detectEncoding(s string) string {
 
 func TestTransformCopy(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "all,suffix_keep_extension=_somesuffix")
 	require.NoError(t, err)
 	file1 := r.WriteFile("sub dir/hello world.txt", "hello world", t1)
@@ -244,7 +254,7 @@ func TestTransformCopy(t *testing.T) {
 
 func TestDoubleTransform(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "all,prefix=tac", "all,prefix=tic")
 	require.NoError(t, err)
 	file1 := r.WriteFile("toe/toe", "hello world", t1)
@@ -261,7 +271,7 @@ func TestDoubleTransform(t *testing.T) {
 
 func TestFileTag(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "file,prefix=tac", "file,prefix=tic")
 	require.NoError(t, err)
 	file1 := r.WriteFile("toe/toe/toe", "hello world", t1)
@@ -278,7 +288,7 @@ func TestFileTag(t *testing.T) {
 
 func TestNoTag(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "prefix=tac", "prefix=tic")
 	require.NoError(t, err)
 	file1 := r.WriteFile("toe/toe/toe", "hello world", t1)
@@ -295,7 +305,7 @@ func TestNoTag(t *testing.T) {
 
 func TestDirTag(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "dir,prefix=tac", "dir,prefix=tic")
 	require.NoError(t, err)
 	r.WriteFile("toe/toe/toe.txt", "hello world", t1)
@@ -314,7 +324,7 @@ func TestDirTag(t *testing.T) {
 
 func TestAllTag(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "all,prefix=tac", "all,prefix=tic")
 	require.NoError(t, err)
 	r.WriteFile("toe/toe/toe.txt", "hello world", t1)
@@ -335,7 +345,7 @@ func TestAllTag(t *testing.T) {
 
 func TestRunTwice(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "dir,prefix=tac", "dir,prefix=tic")
 	require.NoError(t, err)
 	file1 := r.WriteFile("toe/toe/toe.txt", "hello world", t1)
@@ -376,7 +386,7 @@ func TestSyntax(t *testing.T) {
 
 func TestConflicting(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "prefix=tac", "trimprefix=tac")
 	require.NoError(t, err)
 	file1 := r.WriteFile("toe/toe/toe", "hello world", t1)
@@ -394,7 +404,7 @@ func TestConflicting(t *testing.T) {
 
 func TestMove(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "all,prefix=tac", "all,prefix=tic")
 	require.NoError(t, err)
 	r.WriteFile("toe/toe/toe.txt", "hello world", t1)
@@ -413,7 +423,7 @@ func TestMove(t *testing.T) {
 
 func TestTransformFile(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "all,prefix=tac", "all,prefix=tic")
 	require.NoError(t, err)
 	r.WriteFile("toe/toe/toe.txt", "hello world", t1)
@@ -431,7 +441,10 @@ func TestTransformFile(t *testing.T) {
 
 	err = transform.SetOptions(ctx, "all,trimprefix=tic", "all,trimprefix=tac")
 	require.NoError(t, err)
-	err = operations.TransformFile(ctx, r.Fremote, "tictactoe/tictactoe/tictactoe.txt")
+	// Retry to wait for eventual consistency.
+	err = fstest.Retry(t, "TransformFile", func() error {
+		return operations.TransformFile(ctx, r.Fremote, "tictactoe/tictactoe/tictactoe.txt")
+	})
 	require.NoError(t, err)
 	r.CheckLocalListing(t, []fstest.Item{}, []string{})
 	r.CheckRemoteListing(t, []fstest.Item{fstest.NewItem("toe/toe/toe.txt", "hello world", t1)}, []string{"tictacempty_dir", "tictactoe", "tictactoe/tictactoe", "toe", "toe/toe"})
@@ -439,7 +452,7 @@ func TestTransformFile(t *testing.T) {
 
 func TestManualTransformFile(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 
 	r.Flocal.Features().DisableList([]string{"Copy", "Move"})
 	r.Fremote.Features().DisableList([]string{"Copy", "Move"})
@@ -461,7 +474,10 @@ func TestManualTransformFile(t *testing.T) {
 
 	err = transform.SetOptions(ctx, "all,trimprefix=tic", "all,trimprefix=tac")
 	require.NoError(t, err)
-	err = operations.TransformFile(ctx, r.Fremote, "tictactoe/tictactoe/tictactoe.txt")
+	// Retry to wait for eventual consistency.
+	err = fstest.Retry(t, "TransformFile", func() error {
+		return operations.TransformFile(ctx, r.Fremote, "tictactoe/tictactoe/tictactoe.txt")
+	})
 	require.NoError(t, err)
 	r.CheckLocalListing(t, []fstest.Item{}, []string{})
 	r.CheckRemoteListing(t, []fstest.Item{fstest.NewItem("toe/toe/toe.txt", "hello world", t1)}, []string{"tictacempty_dir", "tictactoe", "tictactoe/tictactoe", "toe", "toe/toe"})
@@ -469,7 +485,7 @@ func TestManualTransformFile(t *testing.T) {
 
 func TestBase64(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "all,base64encode")
 	require.NoError(t, err)
 	file1 := r.WriteFile("toe/toe/toe.txt", "hello world", t1)
@@ -497,7 +513,7 @@ func TestBase64(t *testing.T) {
 
 func TestError(t *testing.T) {
 	ctx := context.Background()
-	r := fstest.NewRun(t)
+	r := newTransformRun(t)
 	err := transform.SetOptions(ctx, "all,prefix=ta/c") // has illegal character
 	require.NoError(t, err)
 	file1 := r.WriteFile("toe/toe/toe", "hello world", t1)
@@ -507,6 +523,7 @@ func TestError(t *testing.T) {
 	err = Sync(ctx, r.Fremote, r.Flocal, true)
 	// testLoggerVsLsf(ctx, r.Fremote, r.Flocal, operations.GetLoggerOpt(ctx).JSON, t)
 	assert.Error(t, err)
+	accounting.GlobalStats().ResetCounters()
 
 	r.CheckLocalListing(t, []fstest.Item{file1}, []string{"toe", "toe/toe"})
 	r.CheckRemoteListing(t, []fstest.Item{file1}, []string{"toe", "toe/toe"})

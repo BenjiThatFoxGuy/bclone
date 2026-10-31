@@ -16,14 +16,16 @@ Perform bidirectional synchronization between two paths.
 bidirectional cloud sync solution in rclone.
 It retains the Path1 and Path2 filesystem listings from the prior run.
 On each successive run it will:
+
 - list files on Path1 and Path2, and check for changes on each side.
   Changes include `New`, `Newer`, `Older`, and `Deleted` files.
 - Propagate changes on Path1 to Path2, and vice-versa.
 
 Bisync is considered an **advanced command**, so use with care.
 Make sure you have read and understood the entire [manual](https://rclone.org/bisync)
-(especially the [Limitations](https://rclone.org/bisync/#limitations) section) before using,
-or data loss can result. Questions can be asked in the [Rclone Forum](https://forum.rclone.org/).
+(especially the [Limitations](https://rclone.org/bisync/#limitations) section)
+before using, or data loss can result. Questions can be asked in the
+[Rclone Forum](https://forum.rclone.org/).
 
 See [full bisync description](https://rclone.org/bisync/) for details.
 
@@ -59,7 +61,7 @@ rclone bisync remote1:path1 remote2:path2 [flags]
   -1, --resync                               Performs the resync run. Equivalent to --resync-mode path1. Consider using --verbose or --dry-run first.
       --resync-mode string                   During resync, prefer the version that is: path1, path2, newer, older, larger, smaller (default: path1 if --resync, otherwise none for no resync.) (default "none")
       --slow-hash-sync-only                  Ignore slow checksums for listings and deltas, but still consider them during sync calls.
-      --workdir string                       Use custom working dir - useful for testing. (default: {WORKDIR})
+      --workdir string                       Use custom working dir - useful for testing. (default: $HOME/.cache/rclone/bisync)
 ```
 
 Options shared with other commands are described next.
@@ -69,7 +71,7 @@ See the [global flags page](/flags/) for global options not listed here.
 
 Flags for anything which can copy a file
 
-```
+```text
       --check-first                                 Do all the checks before starting transfers
   -c, --checksum                                    Check for changes with size & checksum (if available, or fallback to size only)
       --compare-dest stringArray                    Include additional server-side paths during comparison
@@ -106,11 +108,31 @@ Flags for anything which can copy a file
   -u, --update                                      Skip files that are newer on the destination
 ```
 
+### Sync Options
+
+Flags used for sync commands
+
+```text
+      --backup-dir string               Make backups into hierarchy based in DIR
+      --delete-after                    When synchronizing, delete files on destination after transferring (default)
+      --delete-before                   When synchronizing, delete files on destination before transferring
+      --delete-during                   When synchronizing, delete files during transfer
+      --fix-case                        Force rename of case insensitive dest to match source
+      --ignore-errors                   Delete even if there are I/O errors
+      --list-cutoff int                 To save memory, sort directory listings on disk above this threshold (default 1000000)
+      --max-delete int                  When synchronizing, limit the number of deletes (default -1)
+      --max-delete-size SizeSuffix      When synchronizing, limit the total size of deletes (default off)
+      --suffix string                   Suffix to add to changed files
+      --suffix-keep-extension           Preserve the extension when using --suffix
+      --track-renames                   When synchronizing, track file renames and do a server-side move if possible
+      --track-renames-strategy string   Strategies to use when synchronizing using track-renames hash|modtime|leaf (default "hash")
+```
+
 ### Important Options
 
 Important flags useful for most commands
 
-```
+```text
   -n, --dry-run         Do a trial run with no permanent changes
   -i, --interactive     Enable interactive mode
   -v, --verbose count   Print lots more stuff (repeat for more)
@@ -120,13 +142,14 @@ Important flags useful for most commands
 
 Flags for filtering directory listings
 
-```
+```text
       --delete-excluded                     Delete files on dest excluded from sync
       --exclude stringArray                 Exclude files matching pattern
       --exclude-from stringArray            Read file exclude patterns from file (use - to read from stdin)
       --exclude-if-present stringArray      Exclude directories if filename is present
       --files-from stringArray              Read list of source-file names from file (use - to read from stdin)
       --files-from-raw stringArray          Read list of source-file names from file without any processing of lines (use - to read from stdin)
+      --files-from0 stringArray             Read list of source-file names from file using NUL as separator (use - to read from stdin)
   -f, --filter stringArray                  Add a file filtering rule
       --filter-from stringArray             Read file filtering patterns from a file (use - to read from stdin)
       --hash-filter string                  Partition filenames by hash k/n or randomly @/n
@@ -148,5 +171,10 @@ Flags for filtering directory listings
 
 ## See Also
 
+<!-- markdownlint-capture -->
+<!-- markdownlint-disable ul-style line-length -->
+
 * [rclone](/commands/rclone/)	 - Show help for rclone commands, flags and backends.
 
+
+<!-- markdownlint-restore -->

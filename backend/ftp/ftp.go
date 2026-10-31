@@ -204,6 +204,12 @@ Example:
 			Help: `URL for HTTP CONNECT proxy
 
 Set this to a URL for an HTTP proxy which supports the HTTP CONNECT verb.
+
+Supports the format http://user:pass@host:port, http://host:port, http://host.
+
+Example:
+
+    http://myUser:myPass@proxyhostname.example.com:8000
 `,
 			Advanced: true,
 		}, {
@@ -456,9 +462,7 @@ func (f *Fs) ftpConnection(ctx context.Context) (c *ftp.ServerConn, err error) {
 			}
 		}()
 		baseDialer := fshttp.NewDialer(ctx)
-		if f.opt.SocksProxy != "" {
-			conn, err = proxy.SOCKS5Dial(network, address, f.opt.SocksProxy, baseDialer)
-		} else if f.proxyURL != nil {
+		if f.opt.SocksProxy != "" || f.proxyURL != nil {
 			// We need to make the onward connection to f.opt.Host. However the FTP
 			// library sets the host to the proxy IP after using EPSV or PASV so we need
 			// to correct that here.
@@ -468,7 +472,11 @@ func (f *Fs) ftpConnection(ctx context.Context) (c *ftp.ServerConn, err error) {
 				return nil, err
 			}
 			dialAddress := net.JoinHostPort(f.opt.Host, dialPort)
-			conn, err = proxy.HTTPConnectDial(network, dialAddress, f.proxyURL, baseDialer)
+			if f.opt.SocksProxy != "" {
+				conn, err = proxy.SOCKS5Dial(network, dialAddress, f.opt.SocksProxy, baseDialer)
+			} else {
+				conn, err = proxy.HTTPConnectDial(network, dialAddress, f.proxyURL, baseDialer)
+			}
 		} else {
 			conn, err = baseDialer.Dial(network, address)
 		}
@@ -576,8 +584,9 @@ func (f *Fs) getFtpConnection(ctx context.Context) (c *ftp.ServerConn, err error
 //
 // It nils the pointed to connection out so it can't be reused
 //
-// if err is not nil then it checks the connection is alive using a
-// NOOP request
+// if err is not nil then it discards the connection unless the error
+// carries an FTP reply code, in which case it checks the connection
+// is alive using a NOOP request
 func (f *Fs) putFtpConnection(pc **ftp.ServerConn, err error) {
 	if f.opt.Concurrency > 0 {
 		defer f.tokens.Put()
@@ -591,14 +600,17 @@ func (f *Fs) putFtpConnection(pc **ftp.ServerConn, err error) {
 	}
 	*pc = nil
 	if err != nil {
-		// If not a regular FTP error code then check the connection
-		if tpErr := textprotoError(err); tpErr != nil {
-			nopErr := c.NoOp()
-			if nopErr != nil {
-				fs.Debugf(f, "Connection failed, closing: %v", nopErr)
-				_ = c.Quit()
-				return
-			}
+		// An error without an FTP reply code means the control
+		// connection can no longer be trusted, so discard it.
+		if textprotoError(err) == nil {
+			fs.Debugf(f, "Discarding connection after non-FTP error: %v", err)
+			_ = c.Quit()
+			return
+		}
+		if nopErr := c.NoOp(); nopErr != nil {
+			fs.Debugf(f, "Connection failed, closing: %v", nopErr)
+			_ = c.Quit()
+			return
 		}
 	}
 	f.poolMu.Lock()
@@ -629,6 +641,18 @@ func (f *Fs) drainPool(ctx context.Context) (err error) {
 	return err
 }
 
+// commandEncoding hardens the user-configured filename encoding so that it
+// can never restore a raw CR or LF.
+//
+// The FTP control channel is line oriented and the ftp library writes command
+// arguments (paths) straight onto it without escaping, so a filename
+// containing CR/LF would otherwise be able to inject an independent FTP
+// command. CR/LF are therefore always encoded to safe symbols regardless of
+// the configured encoding, which is what the default encoding already does.
+func commandEncoding(enc encoder.MultiEncoder) encoder.MultiEncoder {
+	return enc | encoder.EncodeCrLf
+}
+
 // NewFs constructs an Fs from the path, container:path
 func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (ff fs.Fs, err error) {
 	// defer fs.Trace(nil, "name=%q, root=%q", name, root)("fs=%v, err=%v", &ff, &err)
@@ -638,6 +662,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (ff fs.Fs
 	if err != nil {
 		return nil, err
 	}
+	opt.Enc = commandEncoding(opt.Enc)
 	pass := ""
 	if opt.AskPassword && opt.Pass == "" {
 		pass = config.GetPassword("FTP server password")
@@ -890,7 +915,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 
 	resultchan := make(chan []*ftp.Entry, 1)
 	errchan := make(chan error, 1)
-	go func() {
+	go func(c *ftp.ServerConn) {
 		result, err := c.List(f.dirFromStandardPath(path.Join(f.root, dir)))
 		f.putFtpConnection(&c, err)
 		if err != nil {
@@ -898,7 +923,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 			return
 		}
 		resultchan <- result
-	}()
+	}(c)
 
 	// Wait for List for up to Timeout seconds
 	timer := time.NewTimer(f.ci.TimeoutOrInfinite())
@@ -1227,7 +1252,10 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	path = o.fs.opt.Enc.FromStandardPath(path)
 	err = c.SetTime(path, modTime.In(time.UTC))
 	if err == nil && o.info != nil {
-		o.info.ModTime = modTime
+		// The server stores modtimes with second precision so
+		// truncate here too to keep the in-memory modtime identical
+		// to the one a fresh listing returns.
+		o.info.ModTime = modTime.Truncate(time.Second)
 		o.info.precise = true
 	}
 	o.fs.putFtpConnection(&c, err)
@@ -1241,15 +1269,18 @@ func (o *Object) Storable() bool {
 
 // ftpReadCloser implements io.ReadCloser for FTP objects.
 type ftpReadCloser struct {
-	rc  io.ReadCloser
-	c   *ftp.ServerConn
-	f   *Fs
-	err error // errors found during read
+	rc     io.ReadCloser
+	c      *ftp.ServerConn
+	f      *Fs
+	err    error // errors found during read
+	closed bool  // set by Close so a second call is a no-op
+	read   int64 // bytes returned by Read
 }
 
 // Read bytes into p
 func (f *ftpReadCloser) Read(p []byte) (n int, err error) {
 	n, err = f.rc.Read(p)
+	f.read += int64(n)
 	if err != nil && err != io.EOF {
 		f.err = err // store any errors for Close to examine
 	}
@@ -1258,6 +1289,10 @@ func (f *ftpReadCloser) Read(p []byte) (n int, err error) {
 
 // Close the FTP reader and return the connection to the pool
 func (f *ftpReadCloser) Close() error {
+	if f.closed {
+		return nil
+	}
+	f.closed = true
 	var err error
 	errchan := make(chan error, 1)
 	go func() {
@@ -1281,6 +1316,7 @@ func (f *ftpReadCloser) Close() error {
 	// if errors while reading or closing, dump the connection
 	if err != nil || f.err != nil {
 		_ = f.c.Quit()
+		f.c = nil // never pool a connection after Quit
 		f.f.putFtpConnection(nil, nil)
 	} else {
 		f.f.putFtpConnection(&f.c, nil)
@@ -1290,8 +1326,14 @@ func (f *ftpReadCloser) Close() error {
 	// See: https://github.com/rclone/rclone/issues/3445#issuecomment-521654257
 	if errX := textprotoError(err); errX != nil {
 		switch errX.Code {
-		case ftp.StatusTransfertAborted, ftp.StatusFileUnavailable, ftp.StatusAboutToSend:
+		case ftp.StatusTransfertAborted, ftp.StatusFileUnavailable, ftp.StatusAboutToSend, ftp.StatusRequestedFileActionOK:
 			err = nil
+		case ftp.StatusCanNotOpenDataConnection:
+			// Egnyte answers 425 when a RETR is closed before the first
+			// read; a transfer cut after data was read stays an error
+			if f.read == 0 {
+				err = nil
+			}
 		}
 	}
 	return err
@@ -1382,9 +1424,12 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	o.fs.putFtpConnection(&c, nil)
 	if o.fs.opt.NoCheckUpload {
 		o.info = &FileInfo{
-			Name:    o.remote,
-			Size:    uint64(src.Size()),
-			ModTime: src.ModTime(ctx),
+			Name: o.remote,
+			Size: uint64(src.Size()),
+			// The server stores modtimes with second precision so
+			// truncate here too to keep the in-memory modtime
+			// identical to the one a fresh listing returns.
+			ModTime: src.ModTime(ctx).Truncate(time.Second),
 			precise: true,
 			IsDir:   false,
 		}

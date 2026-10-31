@@ -58,6 +58,7 @@ import (
 	"github.com/rclone/rclone/lib/oauthutil"
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/random"
+	"github.com/rclone/rclone/lib/readers"
 	"github.com/rclone/rclone/lib/rest"
 	"golang.org/x/oauth2"
 )
@@ -223,7 +224,7 @@ Fill in for rclone to use a non root folder as its starting point.
 			Advanced: true,
 		}, {
 			Name:     "hash_memory_limit",
-			Help:     "Files bigger than this will be cached on disk to calculate hash if required.",
+			Help:     "Files bigger than this will be cached on disk to calculate hash if required.\n\nFiles of unknown size are always cached on disk.",
 			Default:  fs.SizeSuffix(10 * 1024 * 1024),
 			Advanced: true,
 		}, {
@@ -432,8 +433,7 @@ func (f *Fs) shouldRetry(ctx context.Context, resp *http.Response, err error) (b
 
 	// traceback to possible api.Error wrapped in err, and re-authorize if necessary
 	// "unauthenticated" (16): when access_token is invalid, but should be handled by oauthutil
-	var terr *oauth2.RetrieveError
-	if errors.As(err, &terr) {
+	if terr, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
 		apiErr := new(api.Error)
 		if err := json.Unmarshal(terr.Body, apiErr); err == nil {
 			if apiErr.Reason == "invalid_grant" {
@@ -1384,10 +1384,12 @@ func (f *Fs) uploadByForm(ctx context.Context, in io.Reader, name string, size i
 	for i := range iVal.NumField() {
 		params.Set(iTyp.Field(i).Tag.Get("json"), iVal.Field(i).String())
 	}
-	formReader, contentType, overhead, err := rest.MultipartUpload(ctx, in, params, "file", name)
+	formReader, contentType, overhead, err := rest.MultipartUpload(ctx, in, params, "file", name, "application/octet-stream")
 	if err != nil {
 		return fmt.Errorf("failed to make multipart upload: %w", err)
 	}
+	// Stop the form writer reading in if the request fails before sending it all
+	defer func() { _ = formReader.Close() }()
 
 	contentLength := overhead + size
 	opts := rest.Opts{
@@ -1447,10 +1449,11 @@ func (f *Fs) uploadByResumable(ctx context.Context, in io.Reader, name string, s
 	if err != nil {
 		return fmt.Errorf("failed to create upload client: %w", err)
 	}
+	counter := readers.NewCountingReader(in)
 	req := &s3.PutObjectInput{
 		Bucket: &p.Bucket,
 		Key:    &p.Key,
-		Body:   io.NopCloser(in),
+		Body:   io.NopCloser(counter),
 	}
 	// Apply upload options
 	for _, option := range options {
@@ -1478,7 +1481,14 @@ func (f *Fs) uploadByResumable(ctx context.Context, in io.Reader, name string, s
 		_, err = client.PutObject(ctx, req, s3opts...)
 		return f.shouldRetry(ctx, nil, err)
 	})
-	return
+	if err != nil {
+		return err
+	}
+	// Check for truncation of input
+	if size >= 0 && int64(counter.BytesRead()) != size {
+		return fmt.Errorf("expected %d bytes in input, but got %d: %w", size, counter.BytesRead(), io.ErrUnexpectedEOF)
+	}
+	return nil
 }
 
 func (f *Fs) upload(ctx context.Context, in io.Reader, leaf, dirID, gcid string, size int64, options ...fs.OpenOption) (info *api.File, err error) {
@@ -1608,7 +1618,7 @@ func (f *Fs) UserInfo(ctx context.Context) (userInfo map[string]string, err erro
 // ------------------------------------------------------------
 
 // add offline download task for url
-func (f *Fs) addURL(ctx context.Context, url, path string) (*api.Task, error) {
+func (f *Fs) addURL(ctx context.Context, url, name, path string) (*api.Task, error) {
 	req := api.RequestNewTask{
 		Kind:       api.KindOfFile,
 		UploadType: "UPLOAD_TYPE_URL",
@@ -1616,6 +1626,9 @@ func (f *Fs) addURL(ctx context.Context, url, path string) (*api.Task, error) {
 			URL: url,
 		},
 		FolderType: "DOWNLOAD",
+	}
+	if name != "" {
+		req.Name = f.opt.Enc.FromStandardName(name)
 	}
 	if parentID, err := f.dirCache.FindDir(ctx, path, false); err == nil {
 		req.ParentID = parentIDForRequest(parentID)
@@ -1678,39 +1691,47 @@ func (f *Fs) decompressDir(ctx context.Context, filename, id, password string, s
 
 var commandHelp = []fs.CommandHelp{{
 	Name:  "addurl",
-	Short: "Add offline download task for url",
+	Short: "Add offline download task for url.",
 	Long: `This command adds offline download task for url.
 
-Usage:
+Usage examples:
 
-    rclone backend addurl pikpak:dirpath url
+` + "```console" + `
+rclone backend addurl pikpak:dirpath url
+rclone backend addurl pikpak:dirpath url -o name=custom_filename.zip
+` + "```" + `
 
-Downloads will be stored in 'dirpath'. If 'dirpath' is invalid, 
-download will fallback to default 'My Pack' folder.
-`,
+Downloads will be stored in 'dirpath'. If 'dirpath' is invalid,
+download will fallback to default 'My Pack' folder.`,
+	Opts: map[string]string{
+		"name": "Custom filename for the downloaded file.",
+	},
 }, {
 	Name:  "decompress",
-	Short: "Request decompress of a file/files in a folder",
+	Short: "Request decompress of a file/files in a folder.",
 	Long: `This command requests decompress of file/files in a folder.
 
-Usage:
+Usage examples:
 
-    rclone backend decompress pikpak:dirpath {filename} -o password=password
-    rclone backend decompress pikpak:dirpath {filename} -o delete-src-file
+` + "```console" + `
+rclone backend decompress pikpak:dirpath {filename} -o password=password
+rclone backend decompress pikpak:dirpath {filename} -o delete-src-file
+` + "```" + `
 
-An optional argument 'filename' can be specified for a file located in 
-'pikpak:dirpath'. You may want to pass '-o password=password' for a 
-password-protected files. Also, pass '-o delete-src-file' to delete 
+An optional argument 'filename' can be specified for a file located in
+'pikpak:dirpath'. You may want to pass '-o password=password' for a
+password-protected files. Also, pass '-o delete-src-file' to delete
 source files after decompression finished.
 
 Result:
 
-    {
-        "Decompressed": 17,
-        "SourceDeleted": 0,
-        "Errors": 0
-    }
-`,
+` + "```json" + `
+{
+    "Decompressed": 17,
+    "SourceDeleted": 0,
+    "Errors": 0
+}
+` + "```",
 }}
 
 // Command the backend to run a named command
@@ -1728,7 +1749,11 @@ func (f *Fs) Command(ctx context.Context, name string, arg []string, opt map[str
 		if len(arg) != 1 {
 			return nil, errors.New("need exactly 1 argument")
 		}
-		return f.addURL(ctx, arg[0], "")
+		filename := ""
+		if name, ok := opt["name"]; ok {
+			filename = name
+		}
+		return f.addURL(ctx, arg[0], filename, "")
 	case "decompress":
 		filename := ""
 		if len(arg) > 0 {
@@ -1923,6 +1948,12 @@ func (o *Object) httpResponse(ctx context.Context, url, method string, options [
 	}
 	err = o.fs.pacer.Call(func() (bool, error) {
 		res, err = o.fs.client.Do(req)
+		// client.Do does not fail a completed non-2xx response, so the
+		// HTML error page would be returned as the file. errorHandler
+		// closes the body; shouldRetry then retries retryErrorCodes.
+		if err == nil && (res.StatusCode < 200 || res.StatusCode > 299) {
+			err = errorHandler(res)
+		}
 		return o.fs.shouldRetry(ctx, res, err)
 	})
 	if err != nil {

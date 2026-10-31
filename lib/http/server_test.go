@@ -15,10 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func testEmptyHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-}
-
 func testEchoHandler(data []byte) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(data)
@@ -548,6 +544,133 @@ func TestNewServerTLS(t *testing.T) {
 			testExpectRespBody(t, resp, expected)
 		})
 	}
+}
+
+// TestNewServerTLSMultipleListeners checks that when TLS is configured it
+// applies to every listener, with the http:// and tls:// prefixes selecting
+// the protocol for an individual listener.
+func TestNewServerTLSMultipleListeners(t *testing.T) {
+	serverCertBytes := testReadTestdataFile(t, "local.crt")
+	serverKeyBytes := testReadTestdataFile(t, "local.key")
+
+	for _, ss := range []struct {
+		name    string
+		addrs   []string
+		schemes []string
+	}{
+		{
+			name:    "AllTLSByDefault",
+			addrs:   []string{"127.0.0.1:0", "127.0.0.1:0"},
+			schemes: []string{"https://", "https://"},
+		},
+		{
+			name:    "ExplicitHTTP",
+			addrs:   []string{"127.0.0.1:0", "http://127.0.0.1:0"},
+			schemes: []string{"https://", "http://"},
+		},
+		{
+			name:    "ExplicitTLS",
+			addrs:   []string{"tls://127.0.0.1:0", "http://127.0.0.1:0"},
+			schemes: []string{"https://", "http://"},
+		},
+	} {
+		t.Run(ss.name, func(t *testing.T) {
+			cfg := DefaultCfg()
+			cfg.ListenAddr = ss.addrs
+			cfg.TLSCertBody = serverCertBytes
+			cfg.TLSKeyBody = serverKeyBytes
+
+			s, err := NewServer(context.Background(), WithConfig(cfg))
+			require.NoError(t, err)
+			defer func() {
+				require.NoError(t, s.Shutdown())
+			}()
+
+			expected := []byte("secret-page")
+			s.Router().Mount("/", testEchoHandler(expected))
+			s.Serve()
+
+			urls := s.URLs()
+			require.Equal(t, len(ss.schemes), len(urls), "should have one URL per listener")
+			for i, url := range urls {
+				require.Truef(t, strings.HasPrefix(url, ss.schemes[i]), "url %q should have scheme %q", url, ss.schemes[i])
+
+				// Check the listener really speaks the protocol its URL claims
+				client := &http.Client{}
+				reqURL := url
+				if ss.schemes[i] == "https://" {
+					dest := strings.TrimSuffix(strings.TrimPrefix(url, "https://"), "/")
+					client.Transport = &http.Transport{
+						DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+							return net.Dial("tcp", dest)
+						},
+						TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+					}
+					reqURL = "https://dev.rclone.org"
+				}
+				req, err := http.NewRequest("GET", reqURL, nil)
+				require.NoError(t, err)
+
+				resp, err := client.Do(req)
+				require.NoError(t, err)
+
+				require.Equal(t, http.StatusOK, resp.StatusCode, "should return ok")
+				testExpectRespBody(t, resp, expected)
+				require.NoError(t, resp.Body.Close())
+			}
+		})
+	}
+}
+
+// A tls:// address without a TLS config must be an error rather than silently
+// serving cleartext.
+func TestNewServerTLSListenerRequiresConfig(t *testing.T) {
+	cfg := DefaultCfg()
+	cfg.ListenAddr = []string{"tls://127.0.0.1:0"}
+	_, err := NewServer(context.Background(), WithConfig(cfg))
+	require.ErrorIs(t, err, ErrTLSConfigRequired)
+}
+
+func TestH2CServer(t *testing.T) {
+	ctx := context.Background()
+
+	cfg := DefaultCfg()
+	cfg.ListenAddr = []string{"127.0.0.1:0"}
+
+	s, err := NewServer(ctx, WithConfig(cfg))
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, s.Shutdown())
+	}()
+
+	expected := []byte("h2c-test-response")
+	s.Router().Mount("/", testEchoHandler(expected))
+	s.Serve()
+
+	url := testGetServerURL(t, s)
+	require.True(t, strings.HasPrefix(url, "http://"), "url should have http scheme (no TLS)")
+
+	// Create an HTTP/2 cleartext client
+	var protocols http.Protocols
+	protocols.SetUnencryptedHTTP2(true)
+	client := &http.Client{
+		Transport: &http.Transport{
+			Protocols: &protocols,
+		},
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	require.NoError(t, err)
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, 2, resp.ProtoMajor, "response should be HTTP/2")
+	testExpectRespBody(t, resp, expected)
 }
 
 func TestHelpPrefixServer(t *testing.T) {

@@ -254,7 +254,7 @@ func (wb *WriteBack) SetID(pid *Handle) {
 //
 // Use SetID to create Handles in advance of calling Add.
 //
-// If modified is false then it it doesn't cancel a pending upload if
+// If modified is false then it doesn't cancel a pending upload if
 // there is one as there is no need.
 func (wb *WriteBack) Add(id Handle, name string, size int64, modified bool, putFn PutFn) Handle {
 	wb.mu.Lock()
@@ -352,7 +352,9 @@ func (wb *WriteBack) upload(ctx context.Context, wbItem *writeBackItem) {
 	fs.Debugf(wbItem.name, "vfs cache: starting upload")
 
 	wb.mu.Unlock()
-	err := putFn(ctx)
+	// Recover around the upload itself rather than the whole goroutine, so a
+	// panicking backend is retried like any other upload failure below.
+	err := vfscommon.RecoverCall(wbItem.name, func() error { return putFn(ctx) })
 	wb.mu.Lock()
 
 	wbItem.cancel() // cancel context to release resources since store done
@@ -433,11 +435,16 @@ func (wb *WriteBack) processItems(ctx context.Context) {
 	}
 
 	resetTimer := true
-	for wbItem := wb._peekItem(); wbItem != nil && time.Until(wbItem.expiry) <= 0; wbItem = wb._peekItem() {
-		// If reached transfer limit don't restart the timer
-		if wb.uploads >= fs.GetConfig(context.TODO()).Transfers {
+	for wbItem := wb._peekItem(); wbItem != nil; wbItem = wb._peekItem() {
+		// If reached transfer limit stop the timer - it will be
+		// restarted when an upload finishes
+		if wb.uploads >= fs.GetConfig(wb.ctx).Transfers {
 			fs.Debugf(wbItem.name, "vfs cache: delaying writeback as --transfers exceeded")
 			resetTimer = false
+			break
+		}
+		// Stop if the next item hasn't expired yet
+		if time.Until(wbItem.expiry) > 0 {
 			break
 		}
 		// Pop the item, mark as uploading and start the uploader

@@ -8,7 +8,9 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rclone/rclone/cmd/bisync/bilib"
 	"github.com/rclone/rclone/fs"
@@ -16,6 +18,8 @@ import (
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fs/operations"
 	"github.com/rclone/rclone/fstest"
+	"github.com/rclone/rclone/fstest/mockfs"
+	"github.com/rclone/rclone/fstest/mockobject"
 	"github.com/rclone/rclone/lib/readers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -218,21 +222,21 @@ func TestCheckEqualReaders(t *testing.T) {
 	b65b[len(b65b)-1] = 1
 	b66 := make([]byte, 66*1024)
 
-	differ, err := operations.CheckEqualReaders(bytes.NewBuffer(b65a), bytes.NewBuffer(b65a))
+	equal, err := operations.CheckEqualReaders(bytes.NewBuffer(b65a), bytes.NewBuffer(b65a))
 	assert.NoError(t, err)
-	assert.Equal(t, differ, false)
+	assert.Equal(t, equal, true)
 
-	differ, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), bytes.NewBuffer(b65b))
+	equal, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), bytes.NewBuffer(b65b))
 	assert.NoError(t, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
-	differ, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), bytes.NewBuffer(b66))
+	equal, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), bytes.NewBuffer(b66))
 	assert.NoError(t, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
-	differ, err = operations.CheckEqualReaders(bytes.NewBuffer(b66), bytes.NewBuffer(b65a))
+	equal, err = operations.CheckEqualReaders(bytes.NewBuffer(b66), bytes.NewBuffer(b65a))
 	assert.NoError(t, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
 	myErr := errors.New("sentinel")
 	wrap := func(b []byte) io.Reader {
@@ -241,37 +245,37 @@ func TestCheckEqualReaders(t *testing.T) {
 		return io.MultiReader(r, e)
 	}
 
-	differ, err = operations.CheckEqualReaders(wrap(b65a), bytes.NewBuffer(b65a))
+	equal, err = operations.CheckEqualReaders(wrap(b65a), bytes.NewBuffer(b65a))
 	assert.Equal(t, myErr, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
-	differ, err = operations.CheckEqualReaders(wrap(b65a), bytes.NewBuffer(b65b))
+	equal, err = operations.CheckEqualReaders(wrap(b65a), bytes.NewBuffer(b65b))
 	assert.Equal(t, myErr, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
-	differ, err = operations.CheckEqualReaders(wrap(b65a), bytes.NewBuffer(b66))
+	equal, err = operations.CheckEqualReaders(wrap(b65a), bytes.NewBuffer(b66))
 	assert.Equal(t, myErr, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
-	differ, err = operations.CheckEqualReaders(wrap(b66), bytes.NewBuffer(b65a))
+	equal, err = operations.CheckEqualReaders(wrap(b66), bytes.NewBuffer(b65a))
 	assert.Equal(t, myErr, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
-	differ, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), wrap(b65a))
+	equal, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), wrap(b65a))
 	assert.Equal(t, myErr, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
-	differ, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), wrap(b65b))
+	equal, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), wrap(b65b))
 	assert.Equal(t, myErr, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
-	differ, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), wrap(b66))
+	equal, err = operations.CheckEqualReaders(bytes.NewBuffer(b65a), wrap(b66))
 	assert.Equal(t, myErr, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 
-	differ, err = operations.CheckEqualReaders(bytes.NewBuffer(b66), wrap(b65a))
+	equal, err = operations.CheckEqualReaders(bytes.NewBuffer(b66), wrap(b65a))
 	assert.Equal(t, myErr, err)
-	assert.Equal(t, differ, true)
+	assert.Equal(t, equal, false)
 }
 
 func TestParseSumFile(t *testing.T) {
@@ -539,6 +543,120 @@ func TestCheckSum(t *testing.T) {
 
 func TestCheckSumDownload(t *testing.T) {
 	testCheckSum(t, true)
+}
+
+// hashProbe records how many hashing operations are running at once. Each
+// operation blocks until want of them are in flight, or until the deadline
+// expires so a serial implementation finishes instead of deadlocking.
+type hashProbe struct {
+	mu       sync.Mutex
+	inFlight int
+	max      int
+	want     int
+	once     sync.Once
+	reached  chan struct{}
+	timedOut chan struct{}
+}
+
+func newHashProbe(t *testing.T, want int, deadline time.Duration) *hashProbe {
+	p := &hashProbe{
+		want:     want,
+		reached:  make(chan struct{}),
+		timedOut: make(chan struct{}),
+	}
+	timer := time.AfterFunc(deadline, func() { close(p.timedOut) })
+	t.Cleanup(func() { timer.Stop() })
+	return p
+}
+
+func (p *hashProbe) enter() {
+	p.mu.Lock()
+	p.inFlight++
+	p.max = max(p.max, p.inFlight)
+	full := p.inFlight >= p.want
+	p.mu.Unlock()
+	if full {
+		p.once.Do(func() { close(p.reached) })
+	}
+	select {
+	case <-p.reached:
+	case <-p.timedOut:
+	}
+}
+
+func (p *hashProbe) leave() {
+	p.mu.Lock()
+	p.inFlight--
+	p.mu.Unlock()
+}
+
+func (p *hashProbe) maxInFlight() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.max
+}
+
+// probeObject is an object whose hashing is instrumented by a hashProbe
+type probeObject struct {
+	*mockobject.ContentMockObject
+	probe *hashProbe
+}
+
+func (o *probeObject) Hash(ctx context.Context, ht hash.Type) (string, error) {
+	o.probe.enter()
+	defer o.probe.leave()
+	return o.ContentMockObject.Hash(ctx, ht)
+}
+
+func (o *probeObject) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
+	o.probe.enter()
+	defer o.probe.leave()
+	return o.ContentMockObject.Open(ctx, options...)
+}
+
+func testCheckSumConcurrency(t *testing.T, download bool) {
+	const (
+		checkers = 2
+		numFiles = 4
+		sumFile  = "test.sum"
+	)
+	hashType := hash.MD5
+
+	ctx, ci := fs.AddConfig(context.Background())
+	ci.Checkers = checkers
+	probe := newHashProbe(t, checkers, 10*time.Second)
+
+	f, err := mockfs.NewFs(ctx, "checkSum", "checkSum", nil)
+	require.NoError(t, err)
+	fsrc := f.(*mockfs.Fs)
+	fsrc.SetHashes(hash.NewHashSet(hashType))
+
+	sums := &bytes.Buffer{}
+	for i := range numFiles {
+		remote := fmt.Sprintf("file%d", i)
+		o := mockobject.New(remote).WithContent([]byte("contents of "+remote), mockobject.SeekModeNone)
+		sum, err := o.Hash(ctx, hashType)
+		require.NoError(t, err)
+		_, _ = fmt.Fprintf(sums, "%s  %s\n", sum, remote)
+		fsrc.AddObject(&probeObject{ContentMockObject: o, probe: probe})
+	}
+
+	f, err = mockfs.NewFs(ctx, "sums", "sums", nil)
+	require.NoError(t, err)
+	fsum := f.(*mockfs.Fs)
+	fsum.AddObject(mockobject.New(sumFile).WithContent(sums.Bytes(), mockobject.SeekModeNone))
+
+	opt := operations.CheckOpt{Combined: new(bytes.Buffer)}
+	require.NoError(t, operations.CheckSum(ctx, fsrc, fsum, sumFile, hashType, &opt, download))
+	assert.Equal(t, checkers, probe.maxInFlight(), "hashing was not run --checkers at a time")
+}
+
+func TestCheckSumConcurrency(t *testing.T) {
+	testCheckSumConcurrency(t, false)
+}
+
+func TestCheckSumDownloadConcurrency(t *testing.T) {
+	testCheckSumConcurrency(t, true)
 }
 
 func TestApplyTransforms(t *testing.T) {

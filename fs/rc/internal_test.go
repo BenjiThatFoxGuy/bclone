@@ -111,6 +111,9 @@ func TestCoreVersion(t *testing.T) {
 	assert.Equal(t, runtime.GOOS, out["os"])
 	assert.Equal(t, runtime.GOARCH, out["arch"])
 	assert.Equal(t, runtime.Version(), out["goVersion"])
+	assert.True(t, strings.HasPrefix(out["osArch"].(string), runtime.GOARCH))
+	assert.NotEqual(t, "", out["osVersion"].(string))
+	assert.NotEqual(t, "", out["osKernel"].(string))
 	_ = out["isGit"].(bool)
 	v := out["decomposed"].([]int64)
 	assert.True(t, len(v) >= 2)
@@ -195,4 +198,24 @@ func TestCoreCommand(t *testing.T) {
 	t.Run("Stream", func(t *testing.T) {
 		test("unknown_command", "STREAM", version+errorString, true)
 	})
+}
+
+// core/disks: Tests local disks
+func TestCoreDisks(t *testing.T) {
+	call := Calls.Get("core/disks")
+	assert.NotNil(t, call)
+	in := Params{}
+	out, err := call.Fn(context.Background(), in)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out["disks"])
+	disks, ok := out["disks"].([]string)
+	require.True(t, ok)
+	assert.True(t, len(disks) >= 2)
+	for _, disk := range disks {
+		assert.NotEqual(t, disk, "")
+		if disk != "/" {
+			assert.False(t, strings.HasSuffix(disk, "/"))
+		}
+	}
 }

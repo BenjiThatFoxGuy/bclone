@@ -347,27 +347,17 @@ type multiThreadCopyState struct {
 }
 
 // Copy a single chunk into place
-func (mc *multiThreadCopyState) copyChunk(ctx context.Context, chunk int, writer fs.ChunkWriter) (err error) {
+func (mc *multiThreadCopyState) copyChunk(ctx context.Context, chunk int, writer fs.ChunkWriter, start, end, size int64, rw *pool.RW) (err error) {
 	defer func() {
+		if !mc.noBuffering {
+			fs.CheckClose(rw, &err)
+		}
 		if err != nil {
-			fs.Debugf(mc.src, "multi-thread copy: chunk %d/%d failed: %v", chunk+1, mc.numChunks, err)
+			fs.DebugfCtx(ctx, mc.src, "multi-thread copy: chunk %d/%d failed: %v", chunk+1, mc.numChunks, err)
 		}
 	}()
-	start := int64(chunk) * mc.partSize
-	if start >= mc.size {
-		return nil
-	}
-	end := min(start+mc.partSize, mc.size)
-	size := end - start
 
-	// Reserve the memory first so we don't open the source and wait for memory buffers for ages
-	var rw *pool.RW
-	if !mc.noBuffering {
-		rw = multipart.NewRW().Reserve(size)
-		defer fs.CheckClose(rw, &err)
-	}
-
-	fs.Debugf(mc.src, "multi-thread copy: chunk %d/%d (%d-%d) size %v starting", chunk+1, mc.numChunks, start, end, fs.SizeSuffix(size))
+	fs.DebugfCtx(ctx, mc.src, "multi-thread copy: chunk %d/%d (%d-%d) size %v starting", chunk+1, mc.numChunks, start, end, fs.SizeSuffix(size))
 
 	rc, err := Open(ctx, mc.src, &fs.RangeOption{Start: start, End: end - 1})
 	if err != nil {
@@ -399,7 +389,7 @@ func (mc *multiThreadCopyState) copyChunk(ctx context.Context, chunk int, writer
 		return fmt.Errorf("multi-thread copy: failed to write chunk: %w", err)
 	}
 
-	fs.Debugf(mc.src, "multi-thread copy: chunk %d/%d (%d-%d) size %v finished", chunk+1, mc.numChunks, start, end, fs.SizeSuffix(bytesWritten))
+	fs.DebugfCtx(ctx, mc.src, "multi-thread copy: chunk %d/%d (%d-%d) size %v finished", chunk+1, mc.numChunks, start, end, fs.SizeSuffix(bytesWritten))
 	return nil
 }
 
@@ -434,17 +424,17 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 		}
 		openChunkWriter = openChunkWriterFromOpenWriterAt(openWriterAt, int64(ci.MultiThreadChunkSize), int64(ci.MultiThreadWriteBufferSize), f)
 		// If we are using OpenWriterAt we don't seek the chunks so don't need to buffer
-		fs.Debugf(src, "multi-thread copy: disabling buffering because destination uses OpenWriterAt")
+		fs.DebugfCtx(ctx, src, "multi-thread copy: disabling buffering because destination uses OpenWriterAt")
 		noBuffering = true
 		usingOpenWriterAt = true
 	} else if src.Fs().Features().IsLocal {
 		// If the source fs is local we don't need to buffer
-		fs.Debugf(src, "multi-thread copy: disabling buffering because source is local disk")
+		fs.DebugfCtx(ctx, src, "multi-thread copy: disabling buffering because source is local disk")
 		noBuffering = true
 	} else if f.Features().ChunkWriterDoesntSeek {
 		// If the destination Fs promises not to seek its chunks
 		// (except for retries) then we don't need buffering.
-		fs.Debugf(src, "multi-thread copy: disabling buffering because destination has set ChunkWriterDoesntSeek")
+		fs.DebugfCtx(ctx, src, "multi-thread copy: disabling buffering because destination has set ChunkWriterDoesntSeek")
 		noBuffering = true
 	}
 
@@ -468,27 +458,27 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 		if info.LeavePartsOnError || uploadedOK || resumeEnabled {
 			return
 		}
-		fs.Debugf(src, "multi-thread copy: cancelling transfer on exit")
+		fs.DebugfCtx(ctx, src, "multi-thread copy: cancelling transfer on exit")
 		abortErr := chunkWriter.Abort(ctx)
 		if abortErr != nil {
-			fs.Debugf(src, "multi-thread copy: abort failed: %v", abortErr)
+			fs.DebugfCtx(ctx, src, "multi-thread copy: abort failed: %v", abortErr)
 		}
 	})()
 
 	if info.ChunkSize > src.Size() {
-		fs.Debugf(src, "multi-thread copy: chunk size %v was bigger than source file size %v", fs.SizeSuffix(info.ChunkSize), fs.SizeSuffix(src.Size()))
+		fs.DebugfCtx(ctx, src, "multi-thread copy: chunk size %v was bigger than source file size %v", fs.SizeSuffix(info.ChunkSize), fs.SizeSuffix(src.Size()))
 		info.ChunkSize = src.Size()
 	}
 
 	// Use the backend concurrency if it is higher than --multi-thread-streams or if --multi-thread-streams wasn't set explicitly
 	if !ci.MultiThreadSet || info.Concurrency > concurrency {
-		fs.Debugf(src, "multi-thread copy: using backend concurrency of %d instead of --multi-thread-streams %d", info.Concurrency, concurrency)
+		fs.DebugfCtx(ctx, src, "multi-thread copy: using backend concurrency of %d instead of --multi-thread-streams %d", info.Concurrency, concurrency)
 		concurrency = info.Concurrency
 	}
 
 	numChunks := calculateNumChunks(src.Size(), info.ChunkSize)
 	if concurrency > numChunks {
-		fs.Debugf(src, "multi-thread copy: number of streams %d was bigger than number of chunks %d", concurrency, numChunks)
+		fs.DebugfCtx(ctx, src, "multi-thread copy: number of streams %d was bigger than number of chunks %d", concurrency, numChunks)
 		concurrency = numChunks
 	}
 
@@ -572,7 +562,7 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 		}
 	}
 
-	fs.Debugf(src, "Starting multi-thread copy with %d chunks of size %v with %v parallel streams", mc.numChunks, fs.SizeSuffix(mc.partSize), concurrency)
+	fs.DebugfCtx(ctx, src, "Starting multi-thread copy with %d chunks of size %v with %v parallel streams", mc.numChunks, fs.SizeSuffix(mc.partSize), concurrency)
 
 	// Track chunks for state saving
 	var stateMu sync.Mutex
@@ -587,9 +577,24 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 		if gCtx.Err() != nil {
 			break
 		}
-		chunk := chunk
+
+		// Work out how big and where the chunk is
+		start := int64(chunk) * mc.partSize
+		if start >= mc.size {
+			continue
+		}
+		end := min(start+mc.partSize, mc.size)
+		size := end - start
+
+		// Reserve the memory first so we don't open the source and wait for memory buffers for ages
+		// This also avoids creating an excess of goroutines all waiting on memory.
+		var rw *pool.RW
+		if !mc.noBuffering {
+			rw = multipart.NewRW().Reserve(size)
+		}
+
 		g.Go(func() error {
-			err := mc.copyChunk(gCtx, chunk, chunkWriter)
+			err := mc.copyChunk(gCtx, chunk, chunkWriter, start, end, size, rw)
 			if err != nil {
 				return err
 			}
@@ -600,7 +605,7 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 				state.markChunkComplete(chunk)
 				if localPath != "" {
 					if saveErr := state.save(localPath); saveErr != nil {
-						fs.Debugf(remote, "Failed to save resume state: %v", saveErr)
+						fs.DebugfCtx(gCtx, remote, "Failed to save resume state: %v", saveErr)
 					}
 				}
 				stateMu.Unlock()
@@ -650,7 +655,7 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 				}
 				setModTime = false
 			} else {
-				fs.Errorf(obj, "multi-thread copy: can't set metadata as SetMetadata isn't implemented in: %v", f)
+				fs.ErrorfCtx(ctx, obj, "multi-thread copy: can't set metadata as SetMetadata isn't implemented in: %v", f)
 			}
 		}
 		if setModTime {
@@ -663,7 +668,7 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 		}
 	}
 
-	fs.Debugf(src, "Finished multi-thread copy with %d parts of size %v", mc.numChunks, fs.SizeSuffix(mc.partSize))
+	fs.DebugfCtx(ctx, src, "Finished multi-thread copy with %d parts of size %v", mc.numChunks, fs.SizeSuffix(mc.partSize))
 	return obj, nil
 }
 
@@ -681,7 +686,7 @@ type writerAtChunkWriter struct {
 
 // WriteChunk writes chunkNumber from reader
 func (w *writerAtChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, reader io.ReadSeeker) (int64, error) {
-	fs.Debugf(w.remote, "writing chunk %v", chunkNumber)
+	fs.DebugfCtx(ctx, w.remote, "writing chunk %v", chunkNumber)
 
 	bytesToWrite := w.chunkSize
 	if chunkNumber == (w.chunks-1) && w.size%w.chunkSize != 0 {
@@ -723,7 +728,7 @@ func (w *writerAtChunkWriter) Close(ctx context.Context) error {
 func (w *writerAtChunkWriter) Abort(ctx context.Context) error {
 	err := w.Close(ctx)
 	if err != nil {
-		fs.Errorf(w.remote, "multi-thread copy: failed to close file before aborting: %v", err)
+		fs.ErrorfCtx(ctx, w.remote, "multi-thread copy: failed to close file before aborting: %v", err)
 	}
 	obj, err := w.f.NewObject(ctx, w.remote)
 	if err != nil {
@@ -743,7 +748,7 @@ func openChunkWriterFromOpenWriterAt(openWriterAt fs.OpenWriterAtFn, chunkSize i
 		}
 
 		if writeBufferSize > 0 {
-			fs.Debugf(src.Remote(), "multi-thread copy: write buffer set to %v", writeBufferSize)
+			fs.DebugfCtx(ctx, src.Remote(), "multi-thread copy: write buffer set to %v", writeBufferSize)
 		}
 
 		chunkWriter := &writerAtChunkWriter{

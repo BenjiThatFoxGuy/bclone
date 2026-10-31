@@ -50,6 +50,7 @@ type Sorter struct {
 	errChan    <-chan error          // for getting errors from the ext sort
 	sorter     *extsort.StringSorter // external string sort
 	errs       *errcount.ErrCount    // accumulate errors
+	tempDir    string                // directory for temp files (empty for default)
 }
 
 // KeyFn turns an entry into a sort key
@@ -110,7 +111,7 @@ func (ls *Sorter) keyToEntry(ctx context.Context, key string) (entry fs.DirEntry
 	} else {
 		obj, err := ls.f.NewObject(ctx, remote)
 		if err != nil {
-			fs.Errorf(ls.f, "sorter: failed to re-create object %q: %v", remote, err)
+			fs.ErrorfCtx(ctx, ls.f, "sorter: failed to re-create object %q: %v", remote, err)
 			return nil, fmt.Errorf("sorter: failed to re-create object: %w", err)
 		}
 		entry = obj
@@ -136,7 +137,7 @@ func (ls *Sorter) sendEntriesToExtSort(entries fs.DirEntries) (err error) {
 }
 
 func (ls *Sorter) startExtSort() (err error) {
-	fs.Logf(ls.f, "Switching to on disk sorting as more than %d entries in one directory detected", ls.cutoff)
+	fs.LogfCtx(ls.ctx, ls.f, "Switching to on disk sorting as more than %d entries in one directory detected", ls.cutoff)
 	ls.inputChan = make(chan string, 100)
 	// Options to control the extsort
 	opt := extsort.Config{
@@ -144,6 +145,7 @@ func (ls *Sorter) startExtSort() (err error) {
 		ChanBuffSize:       1024,      // small effect
 		SortedChanBuffSize: 1024,      // makes a lot of difference
 		ChunkSize:          32 * 1024, // tuned for 50 char records (UUID sized)
+		TempFilesDir:       ls.tempDir,
 		// Defaults
 		// ChunkSize:          int(1e6),	// amount of records to store in each chunk which will be written to disk
 		// NumWorkers:         2,		// maximum number of workers to use for parallel sorting
@@ -152,15 +154,26 @@ func (ls *Sorter) startExtSort() (err error) {
 		// TempFilesDir:       "",		// empty for use OS default ex: /tmp
 	}
 	ls.sorter, ls.outputChan, ls.errChan = extsort.Strings(ls.inputChan, &opt)
+	if ls.sorter == nil {
+		// extsort.Strings returns nil when it can't create temp
+		// files (e.g. due to permissions or apparmor restrictions).
+		// The error will be on errChan.
+		select {
+		case err = <-ls.errChan:
+		default:
+			err = errors.New("failed to initialise on-disk sort")
+		}
+		return fmt.Errorf("sorter: %w", err)
+	}
 	go ls.sorter.Sort(ls.ctx)
 
 	// Show we are extsorting now
 	ls.extSort = true
 
 	// Send the accumulated entries to the sorter
-	fs.Debugf(ls.f, "Sending accumulated directory entries to disk")
+	fs.DebugfCtx(ls.ctx, ls.f, "Sending accumulated directory entries to disk")
 	err = ls.sendEntriesToExtSort(ls.entries)
-	fs.Debugf(ls.f, "Done sending accumulated directory entries to disk")
+	fs.DebugfCtx(ls.ctx, ls.f, "Done sending accumulated directory entries to disk")
 	clear(ls.entries)
 	ls.entries = nil
 	return err
@@ -291,6 +304,11 @@ func (ls *Sorter) Send() (err error) {
 					return err
 				}
 			}
+		}
+		// The select may see outputChan closed before reading the
+		// error the sorter sent on errChan
+		if err := <-ls.errChan; err != nil {
+			return err
 		}
 		err = list.Flush()
 		if err != nil {

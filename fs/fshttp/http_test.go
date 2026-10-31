@@ -10,15 +10,18 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"moul.io/http2curl/v2"
 )
 
 func TestCleanAuth(t *testing.T) {
@@ -58,6 +61,32 @@ func TestCleanAuths(t *testing.T) {
 	} {
 		got := string(cleanAuths([]byte(test.in)))
 		assert.Equal(t, test.want, got, test.in)
+	}
+}
+
+func TestCleanCurl(t *testing.T) {
+	for _, test := range []struct {
+		in   []string
+		want []string
+	}{{
+		[]string{""},
+		[]string{""},
+	}, {
+		[]string{"floo"},
+		[]string{"floo"},
+	}, {
+		[]string{"'Authorization: AAAAAAAAA'", "'Potato: Help'", ""},
+		[]string{"'Authorization: XXXX'", "'Potato: Help'", ""},
+	}, {
+		[]string{"'X-Auth-Token: AAAAAAAAA'", "'Potato: Help'", ""},
+		[]string{"'X-Auth-Token: XXXX'", "'Potato: Help'", ""},
+	}, {
+		[]string{"'X-Auth-Token: AAAAAAAAA'", "'Authorization: AAAAAAAAA'", "'Potato: Help'", ""},
+		[]string{"'X-Auth-Token: XXXX'", "'Authorization: XXXX'", "'Potato: Help'", ""},
+	}} {
+		in := http2curl.CurlCommand(test.in)
+		cleanCurl(&in)
+		assert.Equal(t, test.want, test.in, test.in)
 	}
 }
 
@@ -145,8 +174,8 @@ func TestCertificates(t *testing.T) {
 	// Set --client-cert and --client-key in config to
 	// a pair of temp files
 	// create a test cert/key pair and write it to the files
-	ctx := context.TODO()
-	ci := fs.GetConfig(ctx)
+	// Use a private config so the cert paths don't leak into other tests
+	ctx, ci := fs.AddConfig(context.TODO())
 	// Create a test certificate and write it to a temp file
 	ci.ClientCert = t.TempDir() + "client.cert"
 	ci.ClientKey = t.TempDir() + "client.key"
@@ -174,4 +203,136 @@ func TestCertificates(t *testing.T) {
 	// The new cert should be auto-loaded before we make this request
 	_, err = client.Get(ts.URL)
 	assert.NoError(t, err)
+}
+
+// TestRedirectStripsGlobalHeaders checks the headers set with --header
+// are sent to the requested host and any redirect on it but not to
+// another host the request is redirected to
+func TestRedirectStripsGlobalHeaders(t *testing.T) {
+	var got http.Header
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+	}))
+	defer target.Close()
+
+	var ts *httptest.Server
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/same":
+			http.Redirect(w, r, ts.URL+"/moved", http.StatusFound)
+		case "/other":
+			http.Redirect(w, r, target.URL+"/moved", http.StatusFound)
+		case "/back":
+			// Chain via the other host and back again
+			http.Redirect(w, r, target.URL+"/bounce", http.StatusFound)
+		default:
+			got = r.Header.Clone()
+		}
+	}))
+	defer ts.Close()
+	// The other host bounces /bounce back to the original host
+	target.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bounce" {
+			http.Redirect(w, r, ts.URL+"/moved", http.StatusFound)
+			return
+		}
+		got = r.Header.Clone()
+	})
+
+	ctx, ci := fs.AddConfig(context.Background())
+	ci.Headers = []*fs.HTTPOption{{Key: "X-Potato", Value: "sausage"}}
+	client := NewClient(ctx)
+
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{"/direct", "sausage"},
+		{"/same", "sausage"},
+		{"/other", ""},
+		{"/back", ""},
+	} {
+		got = nil
+		resp, err := client.Get(ts.URL + test.path)
+		require.NoError(t, err, test.path)
+		require.NoError(t, resp.Body.Close())
+		require.NotNil(t, got, test.path)
+		assert.Equal(t, test.want, got.Get("X-Potato"), test.path)
+	}
+}
+
+// TestRedirectLeavesHost checks the redirect chain walk against
+// synthetic chains, in particular that an HTTPS to HTTP downgrade
+// which keeps the host and port counts as leaving the host.
+func TestRedirectLeavesHost(t *testing.T) {
+	// chain builds the linked list of requests net/http records
+	// when following redirects, returning the last hop
+	chain := func(urls ...string) *http.Request {
+		var req *http.Request
+		for _, u := range urls {
+			next, err := http.NewRequest(http.MethodGet, u, nil)
+			require.NoError(t, err)
+			if req != nil {
+				next.Response = &http.Response{Request: req}
+			}
+			req = next
+		}
+		return req
+	}
+	for _, test := range []struct {
+		urls []string
+		want bool
+	}{
+		{[]string{"https://a.test/"}, false},
+		{[]string{"https://a.test/", "https://a.test/x"}, false},
+		{[]string{"https://a.test/", "https://A.test:443/x"}, false},
+		{[]string{"https://a.test/", "https://b.test/x"}, true},
+		{[]string{"https://a.test/", "https://b.test/x", "https://a.test/y"}, true},
+		{[]string{"https://a.test/", "http://a.test/x"}, true},
+		{[]string{"https://a.test:8443/", "http://a.test:8443/x"}, true},
+		{[]string{"https://a.test:8443/", "http://a.test:8443/x", "https://a.test:8443/y"}, true},
+		{[]string{"http://a.test:8080/", "https://a.test:8080/x"}, false},
+		{[]string{"http://a.test:8080/", "https://a.test:8080/x", "http://a.test:8080/y"}, false},
+	} {
+		assert.Equal(t, test.want, redirectLeavesHost(chain(test.urls...)), test.urls)
+	}
+}
+
+// TestRedirectStripsGlobalHeadersOnDowngrade checks the headers set
+// with --header are not sent over plaintext HTTP when an HTTPS
+// request is redirected to an http:// URL with the same host and
+// port.
+//
+// The https:// request is made to the plain server's host and port
+// with a TLS dialer which ignores the address and connects to the
+// TLS server instead, so both hops share a host and port as they
+// would in the wild.
+func TestRedirectStripsGlobalHeadersOnDowngrade(t *testing.T) {
+	var gotTLS, gotPlain http.Header
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPlain = r.Header.Clone()
+	}))
+	defer plain.Close()
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTLS = r.Header.Clone()
+		http.Redirect(w, r, plain.URL+"/final", http.StatusFound)
+	}))
+	defer secure.Close()
+	tlsConfig := secure.Client().Transport.(*http.Transport).TLSClientConfig
+
+	ctx, ci := fs.AddConfig(context.Background())
+	ci.Headers = []*fs.HTTPOption{{Key: "X-Potato", Value: "sausage"}}
+	client := NewClientCustom(ctx, func(tr *http.Transport) {
+		tr.DialTLSContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&tls.Dialer{Config: tlsConfig}).DialContext(ctx, network, secure.Listener.Addr().String())
+		}
+	})
+
+	resp, err := client.Get("https" + strings.TrimPrefix(plain.URL, "http") + "/start")
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.NotNil(t, gotTLS)
+	require.NotNil(t, gotPlain)
+	assert.Equal(t, "sausage", gotTLS.Get("X-Potato"))
+	assert.Equal(t, "", gotPlain.Get("X-Potato"))
 }

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/nacl/secretbox"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/obscure"
@@ -77,13 +78,16 @@ func Decrypt(b io.ReadSeeker) (io.Reader, error) {
 		if strings.HasPrefix(l, "RCLONE_ENCRYPT_V") {
 			return nil, errors.New("unsupported configuration encryption - update rclone for support")
 		}
+		// Restore non-seekable plain-text stream to its original state
 		if _, err := b.Seek(0, io.SeekStart); err != nil {
-			return nil, err
+			return io.MultiReader(strings.NewReader(l+"\n"), r), nil
 		}
 		return b, nil
 	}
 
-	if len(configKey) == 0 {
+	// A key file named by _RCLONE_CONFIG_KEY_FILE is a key handed over by a
+	// parent process, so the password must not be asked for again here.
+	if len(configKey) == 0 && os.Getenv("_RCLONE_CONFIG_KEY_FILE") == "" {
 		pass, err := GetPasswordCommand(ctx)
 		if err != nil {
 			return nil, err
@@ -128,7 +132,9 @@ func Decrypt(b io.ReadSeeker) (io.Reader, error) {
 
 	var out []byte
 	for {
-		if envKeyFile := os.Getenv("_RCLONE_CONFIG_KEY_FILE"); len(envKeyFile) > 0 {
+		// Only a process without a key of its own consumes the key file, so
+		// that a process which wrote one for its child leaves it in place.
+		if envKeyFile := os.Getenv("_RCLONE_CONFIG_KEY_FILE"); len(configKey) == 0 && len(envKeyFile) > 0 {
 			fs.Debugf(nil, "attempting to obtain configKey from temp file %s", envKeyFile)
 			obscuredKey, err := os.ReadFile(envKeyFile)
 			if err != nil {
@@ -179,7 +185,7 @@ func Decrypt(b io.ReadSeeker) (io.Reader, error) {
 
 // GetPasswordCommand gets the password using the --password-command setting
 //
-// If the the --password-command flag was not in use it returns "", nil
+// If the --password-command flag was not in use it returns "", nil
 func GetPasswordCommand(ctx context.Context) (pass string, err error) {
 	ci := fs.GetConfig(ctx)
 	if len(ci.PasswordCommand) == 0 {
@@ -273,6 +279,11 @@ func SetConfigPassword(password string) error {
 	if err != nil {
 		return err
 	}
+	// Normalize the config encryption password to reduce weird
+	// variations so that the same password always derives the same
+	// key. This is safe for the master password as it is only ever
+	// used to derive the key, never sent anywhere verbatim.
+	password = norm.NFKC.String(password)
 	// Create SHA256 has of the password
 	sha := sha256.New()
 	_, err = sha.Write([]byte("[" + password + "][rclone-config]"))

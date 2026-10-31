@@ -22,7 +22,7 @@ file and choose its location.)
 The easiest way to make the config is to run rclone with the config
 option:
 
-```sh
+```console
 rclone config
 ```
 
@@ -31,6 +31,7 @@ See the following for detailed instructions for
 - [1Fichier](/fichier/)
 - [Akamai Netstorage](/netstorage/)
 - [Alias](/alias/)
+- [Archive](/archive/)
 - [Amazon S3](/s3/)
 - [Backblaze B2](/b2/)
 - [Box](/box/)
@@ -42,10 +43,13 @@ See the following for detailed instructions for
 - [Crypt](/crypt/) - to encrypt other remotes
 - [DigitalOcean Spaces](/s3/#digitalocean-spaces)
 - [Digi Storage](/koofr/#digi-storage)
+- [dosya.dev](/dosya/)
+- [Drime](/drime/)
 - [Dropbox](/dropbox/)
 - [e621](/e621/)
 - [Enterprise File Fabric](/filefabric/)
 - [FileLu Cloud Storage](/filelu/)
+- [Filen](/filen/)
 - [Files.com](/filescom/)
 - [FTP](/ftp/)
 - [Gofile](/gofile/)
@@ -58,9 +62,12 @@ See the following for detailed instructions for
 - [Hetzner Storage Box](/sftp/#hetzner-storage-box)
 - [HiDrive](/hidrive/)
 - [HTTP](/http/)
+- [Huawei Drive](/huaweidrive/)
 - [iCloud Drive](/iclouddrive/)
 - [Internet Archive](/internetarchive/)
+- [Internxt](/internxt/)
 - [Jottacloud](/jottacloud/)
+- [kDrive](/kdrive/)
 - [Koofr](/koofr/)
 - [Linkbox](/linkbox/)
 - [Mail.ru Cloud](/mailru/)
@@ -84,13 +91,13 @@ See the following for detailed instructions for
 - [rsync.net](/sftp/#rsync-net)
 - [Seafile](/seafile/)
 - [SFTP](/sftp/)
+- [Shade](/shade/)
 - [Sia](/sia/)
 - [SMB](/smb/)
 - [Storj](/storj/)
 - [SugarSync](/sugarsync/)
 - [Union](/union/)
 - [Uloz.to](/ulozto/)
-- [Uptobox](/uptobox/)
 - [WebDAV](/webdav/)
 - [Yandex Disk](/yandex/)
 - [Zoho WorkDrive](/zoho/)
@@ -102,7 +109,7 @@ Rclone syncs a directory tree from one storage system to another.
 
 Its syntax is like this
 
-```sh
+```console
 rclone subcommand [options] <parameters> <parameters...>
 ```
 
@@ -117,7 +124,7 @@ used before the `subcommand`. Anything after a `--` option will not be
 interpreted as an option so if you need to add a parameter which
 starts with a `-` then put a `--` on its own first, eg
 
-```sh
+```console
 rclone lsf -- -directory-starting-with-dash
 ```
 
@@ -138,7 +145,7 @@ learning rclone to avoid accidental data loss.
 
 rclone uses a system of subcommands. For example
 
-```sh
+```console
 rclone ls remote:path # lists a remote
 rclone copy /local/path remote:path # copies /local/path to the remote
 rclone sync --interactive /local/path remote:path # syncs /local/path to the remote
@@ -194,7 +201,7 @@ directory` if it isn't.
 For example, suppose you have a remote with a file in called
 `test.jpg`, then you could copy just that file like this
 
-```sh
+```console
 rclone copy remote:test.jpg /tmp/download
 ```
 
@@ -202,13 +209,13 @@ The file `test.jpg` will be placed inside `/tmp/download`.
 
 This is equivalent to specifying
 
-```sh
+```console
 rclone copy --files-from /tmp/files remote: /tmp/download
 ```
 
 Where `/tmp/files` contains the single line
 
-```sh
+```console
 test.jpg
 ```
 
@@ -254,25 +261,25 @@ the command line (or in environment variables).
 
 Here are some examples:
 
-```sh
+```console
 rclone lsd --http-url https://pub.rclone.org :http:
 ```
 
 To list all the directories in the root of `https://pub.rclone.org/`.
 
-```sh
+```console
 rclone lsf --http-url https://example.com :http:path/to/dir
 ```
 
 To list files and directories in `https://example.com/path/to/dir/`
 
-```sh
+```console
 rclone copy --http-url https://example.com :http:path/to/dir /tmp/dir
 ```
 
 To copy files and directories in `https://example.com/path/to/dir` to `/tmp/dir`.
 
-```sh
+```console
 rclone copy --sftp-host example.com :sftp:path/to/dir /tmp/dir
 ```
 
@@ -286,7 +293,7 @@ syntax, so instead of providing the arguments as command line
 parameters `--http-url https://pub.rclone.org` they are provided as
 part of the remote specification as a kind of connection string.
 
-```sh
+```console
 rclone lsd ":http,url='https://pub.rclone.org':"
 rclone lsf ":http,url='https://example.com':path/to/dir"
 rclone copy ":http,url='https://example.com':path/to/dir" /tmp/dir
@@ -297,7 +304,7 @@ These can apply to modify existing remotes as well as create new
 remotes with the on the fly syntax. This example is equivalent to
 adding the `--drive-shared-with-me` parameter to the remote `gdrive:`.
 
-```sh
+```console
 rclone lsf "gdrive,shared_with_me:path/to/dir"
 ```
 
@@ -308,13 +315,13 @@ file shared on google drive to the normal drive which **does not
 work** because the `--drive-shared-with-me` flag applies to both the
 source and the destination.
 
-```sh
+```console
 rclone copy --drive-shared-with-me gdrive:shared-file.txt gdrive:
 ```
 
 However using the connection string syntax, this does work.
 
-```sh
+```console
 rclone copy "gdrive,shared_with_me:shared-file.txt" gdrive:
 ```
 
@@ -323,13 +330,13 @@ backend. If for example gdriveCrypt is a crypt based on gdrive, then the
 following command **will not work** as intended, because
 `shared_with_me` is ignored by the crypt backend:
 
-```sh
+```console
 rclone copy "gdriveCrypt,shared_with_me:shared-file.txt" gdriveCrypt:
 ```
 
 The connection strings have the following syntax
 
-```sh
+```text
 remote,parameter=value,parameter2=value2:path/to/dir
 :backend,parameter=value,parameter2=value2:path/to/dir
 ```
@@ -337,7 +344,7 @@ remote,parameter=value,parameter2=value2:path/to/dir
 If the `parameter` has a `:` or `,` then it must be placed in quotes `"` or
 `'`, so
 
-```sh
+```text
 remote,parameter="colon:value",parameter2="comma,value":path/to/dir
 :backend,parameter='colon:value',parameter2='comma,value':path/to/dir
 ```
@@ -345,7 +352,7 @@ remote,parameter="colon:value",parameter2="comma,value":path/to/dir
 If a quoted value needs to include that quote, then it should be
 doubled, so
 
-```sh
+```text
 remote,parameter="with""quote",parameter2='with''quote':path/to/dir
 ```
 
@@ -356,13 +363,13 @@ If you leave off the `=parameter` then rclone will substitute `=true`
 which works very well with flags. For example, to use s3 configured in
 the environment you could use:
 
-```sh
+```console
 rclone lsd :s3,env_auth:
 ```
 
 Which is equivalent to
 
-```sh
+```console
 rclone lsd :s3,env_auth=true:
 ```
 
@@ -374,7 +381,7 @@ If you are a shell master then you'll know which strings are OK and
 which aren't, but if you aren't sure then enclose them in `"` and use
 `'` as the inside quote. This syntax works on all OSes.
 
-```sh
+```console
 rclone copy ":http,url='https://example.com':path/to/dir" /tmp/dir
 ```
 
@@ -383,7 +390,7 @@ strings in the shell (notably `\` and `$` and `"`) so if your strings
 contain those you can swap the roles of `"` and `'` thus. (This syntax
 does not work on Windows.)
 
-```sh
+```console
 rclone copy ':http,url="https://example.com":path/to/dir' /tmp/dir
 ```
 
@@ -396,13 +403,13 @@ If you supply extra configuration to a backend by command line flag,
 environment variable or connection string then rclone will add a
 suffix based on the hash of the config to the name of the remote, eg
 
-```sh
+```console
 rclone -vv lsf --s3-chunk-size 20M s3:
 ```
 
 Has the log message
 
-```sh
+```text
 DEBUG : s3: detected overridden config - adding "{Srj1p}" suffix to name
 ```
 
@@ -413,13 +420,13 @@ This should only be noticeable in the logs.
 
 This means that on the fly backends such as
 
-```sh
+```console
 rclone -vv lsf :s3,env_auth:
 ```
 
 Will get their own names
 
-```sh
+```text
 DEBUG : :s3: detected overridden config - adding "{YTu53}" suffix to name
 ```
 
@@ -438,6 +445,11 @@ different character encoding, you must be cautious to use characters that are
 possible to write in all of them. This is mostly a problem on Windows, where
 the console traditionally uses a non-Unicode character set - defined
 by the so-called "code page".
+
+If you want to configure a remote using environment variables then its name
+becomes part of the environment variable name, which in practice restricts the
+characters you can use in it. See the [Config file](#config-file) section
+under Environment variables for details.
 
 Do not use single character names on Windows as it creates ambiguity with Windows
 drives' names, e.g.: remote called `C` is indistinguishable from `C` drive. Rclone
@@ -553,13 +565,13 @@ Here are some gotchas which may help users unfamiliar with the shell rules
 If your names have spaces or shell metacharacters (e.g. `*`, `?`, `$`,
 `'`, `"`, etc.) then you must quote them.  Use single quotes `'` by default.
 
-```sh
+```console
 rclone copy 'Important files?' remote:backup
 ```
 
 If you want to send a `'` you will need to use `"`, e.g.
 
-```sh
+```console
 rclone copy "O'Reilly Reviews" remote:backup
 ```
 
@@ -592,13 +604,13 @@ file or directory like this then use the full path starting with a
 
 So to sync a directory called `sync:me` to a remote called `remote:` use
 
-```sh
+```console
 rclone sync --interactive ./sync:me remote:path
 ```
 
 or
 
-```sh
+```console
 rclone sync --interactive /full/path/to/sync:me remote:path
 ```
 
@@ -613,7 +625,7 @@ to copy them in place.
 
 Eg
 
-```sh
+```console
 rclone copy s3:oldbucket s3:newbucket
 ```
 
@@ -634,7 +646,7 @@ same.
 
 This can be used when scripting to make aged backups efficiently, e.g.
 
-```sh
+```console
 rclone sync --interactive remote:current-backup remote:previous-backup
 rclone sync --interactive /path/to/files remote:current-backup
 ```
@@ -775,6 +787,135 @@ modification time of the source object.
 Hashes are not included in system metadata as there is a well defined
 way of reading those already.
 
+## Performance {#performance}
+
+Rclone's defaults are fairly conservative. They are chosen to work on
+small machines, slow links and with cloud providers which rate limit
+heavily. If you have plenty of bandwidth, memory and a fast storage
+system then rclone can usually be made to run a great deal faster by
+adjusting a few flags.
+
+The right values depend on the size of your files, your network and
+the storage systems at each end, so treat the numbers below as
+starting points. Change one thing at a time and measure the result.
+
+### Measuring
+
+Use `rclone copy` with [-P/--progress](#p-progress) to watch the
+transfer rate while you are experimenting. For unattended runs log the
+stats instead, e.g. `--stats 1m --stats-one-line --stats-log-level
+NOTICE`.
+
+A transfer is always limited by something: the network bandwidth, the
+rate at which the storage system will accept requests, disk IO, CPU or
+memory. Tuning is working out which limit you are hitting and raising
+it until you hit the next one. Watch the network, disk, CPU and memory
+use of the machine rclone is running on as well as rclone's stats.
+
+### Lots of files
+
+The time taken to transfer small files is dominated by the round trip
+time of the requests rather than by the bandwidth, so the way to make
+them go faster is to do more of them at once.
+
+[--transfers](#transfers-int) sets the number of files transferred in
+parallel. The default is 4. Double this until the transfer rate stops
+increasing or the storage system starts returning errors. Values of 32
+to 64 are common and values in the hundreds work well with the large
+object storage systems (e.g. s3, azureblob, googlecloudstorage, b2)
+when transferring lots of small files.
+
+[--checkers](#checkers-int) sets the number of directory listings and
+file comparisons done in parallel. The default is 8. Raising this
+speeds up syncs where most of the files are already present on the
+destination and stops the checking being the bottleneck when
+`--transfers` is large. 16 to 64 is a reasonable range.
+
+Not all storage systems like lots of parallel requests. If you see rate
+limiting errors (e.g. HTTP 429 or 503 errors) or lots of low level
+retries in the log then you have gone too far, so reduce `--transfers`
+and `--checkers` or use [--tpslimit](#tpslimit-float) to cap the
+request rate. Local disks, especially spinning ones, and network file
+systems may get slower rather than faster with too much parallelism.
+
+### Large files
+
+A single stream often won't fill a fast link, so rclone can transfer a
+large file as several chunks in parallel. These are called multi-thread
+transfers and are used for files bigger than
+[--multi-thread-cutoff](#multi-thread-cutoff) on backends which
+support them.
+
+The number of chunks transferred in parallel is set by
+[--multi-thread-streams](#multi-thread-streams-int) (default 4) and
+this works for all backends so increase this first to make large files
+transfer faster.
+
+The size of the chunks is set by the backend, usually with a
+`--backend-chunk-size` flag, e.g. `--s3-chunk-size`. Backends without
+a natural chunk size (e.g. local, smb) use
+[--multi-thread-chunk-size](#multi-thread-chunk-size-sizesuffix).
+Larger chunks mean fewer requests which increases throughput on big
+files. See the docs for the backend you are using for details.
+
+Chunked uploads are usually buffered in memory, so in the worst case
+rclone will use
+
+```text
+--transfers * upload concurrency * chunk size
+```
+
+of memory for buffers. For example `--transfers 256` with an upload
+concurrency of 8 and a chunk size of 16 MiB could use up to 32 GiB.
+When you raise `--transfers` to speed up small files you may therefore
+need to lower the upload concurrency, or set
+[--max-buffer-memory](#max-buffer-memory) which limits the total
+memory used for buffers and makes transfers wait when the limit is
+reached.
+
+[--use-mmap](#use-mmap) makes rclone return buffer memory to the OS as
+soon as it has finished with it which is helpful when using lots of
+transfers or large chunks.
+
+### A mixture of large and small files
+
+By default rclone transfers files in roughly the order it finds them.
+With a mixture of file sizes this means that at times all the
+transfers are large files, which fill the bandwidth but make few
+requests, and at other times all the transfers are small files, which
+make lots of requests but use little of the bandwidth.
+
+Using [--order-by](#order-by-string) `size,mixed,50` makes half of the
+transfers take the smallest files in the backlog and half of them take
+the largest. This keeps both large and small files moving at once so
+the bandwidth and the request rate are both kept full for the whole of
+the run.
+
+This works best if rclone has lots of files to choose from so use it
+with a big [--max-backlog](#max-backlog-int), e.g. `--max-backlog
+2000000`. Each item in the backlog uses in the order of 1 KiB of memory.
+
+### Doing less work
+
+Fewer requests to the storage system means a faster transfer.
+
+- If the source and destination are on the same remote then rclone
+  will use [server-side copy](#server-side-copy) where it is supported
+  so the data doesn't need to be downloaded and uploaded again.
+- [--fast-list](#fast-list) lists bucket-based remotes with fewer
+  transactions at the cost of using more memory. This may be faster or
+  slower than the default so it is worth testing.
+- [--no-traverse](#no-traverse) stops rclone listing the destination
+  which helps when copying a small number of files into a large
+  destination.
+- [--size-only](#size-only) or [--checksum](#c-checksum) avoid reading
+  the modification time. On some object storage systems (e.g. s3,
+  swift) this needs an extra request for each file. Alternatively use
+  [--use-server-modtime](#use-server-modtime) with `--update`.
+- [--no-check-dest](#no-check-dest) skips checking the destination
+  entirely. Only use this if you know that none of the files are
+  there already.
+
 ## Options
 
 Rclone has a number of options to control its behaviour. These are
@@ -842,7 +983,7 @@ as a number of seconds. The following suffixes are valid:
 - `M`  - Months
 - `y`  - Years
 
-Examples: "10", "300ms", "-1.5h" or "2h45m".
+Examples: "10", "300ms", "-1.5h", "2h45m" or "1d12h".
 
 ### Size options
 
@@ -874,7 +1015,7 @@ excluded by a filter rule.
 
 For example
 
-```sh
+```console
 rclone sync --interactive /path/to/local remote:current --backup-dir remote:old
 ```
 
@@ -904,7 +1045,7 @@ You can use `--bind 0.0.0.0` to force rclone to use IPv4 addresses and
 
 This option controls the bandwidth limit. For example
 
-```sh
+```text
 --bwlimit 10M
 ```
 
@@ -916,7 +1057,7 @@ suffix B|K|M|G|T|P. The default is `0` which means to not limit bandwidth.
 The upload and download bandwidth can be specified separately, as
 `--bwlimit UP:DOWN`, so
 
-```sh
+```text
 --bwlimit 10M:100k
 ```
 
@@ -924,7 +1065,7 @@ would mean limit the upload bandwidth to 10 MiB/s and the download
 bandwidth to 100 KiB/s. Either limit can be "off" meaning no limit, so
 to just limit the upload bandwidth you would use
 
-```sh
+```text
 --bwlimit 10M:off
 ```
 
@@ -981,14 +1122,14 @@ be unlimited.
 Timeslots without `WEEKDAY` are extended to the whole week. So this
 example:
 
-```sh
+```text
 --bwlimit "Mon-00:00,512 12:00,1M Sun-20:00,off"
 ```
 
 Is equivalent to this:
 
-```sh
---bwlimit "Mon-00:00,512Mon-12:00,1M Tue-12:00,1M Wed-12:00,1M Thu-12:00,1M Fri-12:00,1M Sat-12:00,1M Sun-12:00,1M Sun-20:00,off"
+```text
+--bwlimit "Mon-00:00,512 Mon-12:00,1M Tue-12:00,1M Wed-12:00,1M Thu-12:00,1M Fri-12:00,1M Sat-12:00,1M Sun-12:00,1M Sun-20:00,off"
 ```
 
 Bandwidth limit apply to the data transfer for all backends. For most
@@ -1007,14 +1148,14 @@ of a long running rclone transfer and to restore it back to the value specified
 with `--bwlimit` quickly when needed. Assuming there is only one rclone instance
 running, you can toggle the limiter like this:
 
-```sh
+```console
 kill -SIGUSR2 $(pidof rclone)
 ```
 
 If you configure rclone with a [remote control](/rc) then you can use
 change the bwlimit dynamically:
 
-```sh
+```console
 rclone rc core/bwlimit rate=1M
 ```
 
@@ -1025,7 +1166,7 @@ This option controls per file bandwidth limit. For the options see the
 
 For example use this to allow no transfers to be faster than 1 MiB/s
 
-```sh
+```text
 --bwlimit-file 1M
 ```
 
@@ -1041,7 +1182,8 @@ will use this much memory for buffering.
 
 When using `mount` or `cmount` each open file descriptor will use this much
 memory for buffering.
-See the [mount](/commands/rclone_mount/#file-buffering) documentation for more details.
+See the [mount](/commands/rclone_mount/#vfs-file-buffering) documentation for
+more details.
 
 Set to `0` to disable the buffering for the minimum memory usage.
 
@@ -1210,7 +1352,7 @@ Windows and `/dev/null` on Unix systems, then rclone will keep the
 configuration file in memory only.
 
 You may see a log message "Config file not found - using defaults" if there is
-no configuration file. This can be supressed, e.g. if you are using rclone
+no configuration file. This can be suppressed, e.g. if you are using rclone
 entirely with [on the fly remotes](/docs/#backend-path-to-dir), by using
 memory-only configuration file or by creating an empty configuration file, as
 described above.
@@ -1300,7 +1442,7 @@ for more information as to what these options mean.
 
 ### --default-time Time
 
-If a file or directory does have a modification time rclone can read
+If a file or directory does not have a modification time rclone can read
 then rclone will display this fixed time instead.
 
 The default is `2000-01-01 00:00:00 UTC`. This can be configured in
@@ -1315,7 +1457,7 @@ time rclone started up.
 This disables a comma separated list of optional features. For example
 to disable server-side move and server-side copy use:
 
-```sh
+```text
 --disable move,copy
 ```
 
@@ -1323,13 +1465,13 @@ The features can be put in any case.
 
 To see a list of which features can be disabled use:
 
-```sh
+```text
 --disable help
 ```
 
 The features a remote has can be seen in JSON format with:
 
-```sh
+```console
 rclone backend features remote:
 ```
 
@@ -1369,7 +1511,7 @@ support ([RFC 8622](https://tools.ietf.org/html/rfc8622)).
 
 For example, if you configured QoS on router to handle LE properly. Running:
 
-```sh
+```console
 rclone copy --dscp LE from:/from to:/to
 ```
 
@@ -1461,7 +1603,13 @@ This flag is supported for all HTTP based backends even those not
 supported by `--header-upload` and `--header-download` so may be used
 as a workaround for those with care.
 
-```sh
+The headers are only sent to the host of the original request. If the
+server redirects to another host (including a subdomain or a different
+port), or redirects an `https` request to `http`, the headers are not
+sent to it, or to any further hop in that redirect chain. Rclone logs
+this at debug level (`-vv`).
+
+```console
 rclone ls remote:test --header "X-Rclone: Foo" --header "X-LetMeIn: Yes"
 ```
 
@@ -1470,7 +1618,7 @@ rclone ls remote:test --header "X-Rclone: Foo" --header "X-LetMeIn: Yes"
 Add an HTTP header for all download transactions. The flag can be repeated to
 add multiple headers.
 
-```sh
+```console
 rclone sync --interactive s3:test/src ~/dst --header-download "X-Amz-Meta-Test: Foo" --header-download "X-Amz-Meta-Test2: Bar"
 ```
 
@@ -1482,7 +1630,7 @@ currently supported backends.
 Add an HTTP header for all upload transactions. The flag can be repeated to add
 multiple headers.
 
-```sh
+```console
 rclone sync --interactive ~/src s3:test/dst --header-upload "Content-Disposition: attachment; filename='cool.html'" --header-upload "X-Amz-Meta-Test: FooBar"
 ```
 
@@ -1647,6 +1795,12 @@ Note that on the local file system if you don't use `--inplace` hard
 links (Unix only) will be broken. And if you do use `--inplace` you
 won't be able to update in use executables.
 
+On macOS, if rclone clones a file (see
+[--local-no-clone](/local/#local-no-clone)) and the destination
+already exists, the existing file is replaced with a new one, even
+with `--inplace`, so hard links to it will be broken. Use
+`--local-no-clone` to keep them.
+
 Note also that versions of rclone prior to v1.63.0 behave as if the
 `--inplace` flag is always supplied.
 
@@ -1660,7 +1814,7 @@ especially with `rclone sync`.
 
 For example
 
-```sh
+```console
 $ rclone delete --interactive /tmp/dir
 rclone: delete "important-file.txt"?
 y) Yes, this is OK (default)
@@ -1699,7 +1853,7 @@ like symlinks under Windows). Ignored files won't be copied, moved or
 deleted in a sync.
 
 If you supply this flag then rclone will copy symbolic links from any
-supported backend backend, and store them as text files, with a
+supported backend, and store them as text files, with a
 `.rclonelink` suffix in the destination.
 
 The text file will contain the target of the symbolic link.
@@ -1750,7 +1904,7 @@ ignored.
 
 For example if the following flags are in use
 
-```sh
+```console
 rclone --log-file rclone.log --log-file-max-size 1M --log-file-max-backups 3
 ```
 
@@ -1822,7 +1976,7 @@ warnings and significant events.
 
 See also the [logging](#logging) section.
 
-### --windows-event-log LogLevel
+### --windows-event-log-level LogLevel
 
 If this is configured (the default is `OFF`) then logs of this level
 and above will be logged to the Windows event log in **addition** to
@@ -1838,15 +1992,15 @@ and `Error`. If enabled we map rclone levels like this.
 
 Rclone will declare its log source as "rclone" if it is has enough
 permissions to create the registry key needed. If not then logs will
-appear as "Application". You can run `rclone version --windows-event-log DEBUG`
+appear as "Application". You can run `rclone version --windows-event-log-level DEBUG`
 once as administrator to create the registry key in advance.
 
-**Note** that the `--windows-event-log` level must be greater (more
+**Note** that the `--windows-event-log-level` level must be greater (more
 severe) than or equal to the `--log-level`. For example to log DEBUG
 to a log file but ERRORs to the event log you would use
 
-```sh
---log-file rclone.log --log-level DEBUG --windows-event-log ERROR
+```text
+--log-file rclone.log --log-level DEBUG --windows-event-log-level ERROR
 ```
 
 This option is only supported Windows platforms.
@@ -2058,7 +2212,7 @@ This is the default.
 `CAUTIOUS` will try to prevent rclone from reaching the limit. Only applicable
 for `--max-transfer`.
 
-## -M, --metadata
+### -M, --metadata
 
 Setting this flag enables rclone to copy the metadata from the source
 to the destination. For local backends this is ownership, permissions,
@@ -2076,7 +2230,7 @@ it in `"`, if you want a literal `"` in an argument then enclose the
 argument in `"` and double the `"`. See [CSV encoding](https://godoc.org/encoding/csv)
 for more info.
 
-```sh
+```text
 --metadata-mapper "python bin/test_metadata_mapper.py"
 --metadata-mapper 'python bin/test_metadata_mapper.py "argument with a space"'
 --metadata-mapper 'python bin/test_metadata_mapper.py "argument with ""two"" quotes"'
@@ -2231,7 +2385,7 @@ rclone will use multiple threads to transfer the file (default 256M).
 Capable backends are marked in the
 [overview](/overview/#optional-features) as `MultithreadUpload`. (They
 need to implement either the `OpenWriterAt` or `OpenChunkWriter`
-internal interfaces). These include include, `local`, `s3`,
+internal interfaces). These include `local`, `s3`,
 `azureblob`, `b2`, `oracleobjectstorage` and `smb` at the time of
 writing.
 
@@ -2258,7 +2412,7 @@ Most multi-thread transfers do not take additional memory, but some do
 at maximum `--transfers` \* `--multi-thread-chunk-size` \*
 `--multi-thread-streams` or specifically for the s3 backend
 `--transfers` \* `--s3-chunk-size` \* `--s3-concurrency`. However you
-can use the the [--max-buffer-memory](/docs/#max-buffer-memory) flag
+can use the [--max-buffer-memory](/docs/#max-buffer-memory) flag
 to control the maximum memory used here.
 
 **NB** that this **only** works with supported backends as the
@@ -2376,8 +2530,10 @@ describes what aspect is being measured:
 - `size` - order by the size of the files
 - `name` - order by the full path of the files
 - `modtime` - order by the modification date of the files
+- `pattern` - order by a list of path glob patterns
 
-This can have a modifier appended with a comma:
+The `size`, `name` and `modtime` comparisons can have a modifier appended with
+a comma:
 
 - `ascending` or `asc` - order so that the smallest (or oldest) is processed first
 - `descending` or `desc` - order so that the largest (or newest) is processed first
@@ -2396,11 +2552,18 @@ processed continuously.
 
 If no modifier is supplied then the order is `ascending`.
 
+For `pattern`, append one or more comma-separated patterns. Patterns use the
+[filter pattern syntax](/filtering/#patterns). Files matching the first pattern
+are processed first, followed by files matching the second pattern, and so on.
+Files which do not match a pattern are processed last. Within each group, files
+are ordered by full path. Patterns cannot contain a comma.
+
 For example
 
 - `--order-by size,desc` - send the largest files first
 - `--order-by modtime,ascending` - send the oldest files first
 - `--order-by name` - send the files with alphabetically by path first
+- `--order-by 'pattern,*.tar.gz,*.md5'` - send archives before checksum files
 
 If the `--order-by` flag is not supplied or it is supplied with an
 empty string then the default ordering will be used which is as
@@ -2442,15 +2605,17 @@ setting the config password for the first time.
 The argument to this should be a command with a space separated list
 of arguments. If one of the arguments has a space in then enclose it
 in `"`, if you want a literal `"` in an argument then enclose the
-argument in `"` and double the `"`. See [CSV encoding](https://godoc.org/encoding/csv)
-for more info.
+argument in `"` and double the `"`. This includes the command itself:
+if the path to the executable contains a space, it must be quoted too.
+See [CSV encoding](https://godoc.org/encoding/csv) for more info.
 
 Eg
 
-```sh
+```text
 --password-command "echo hello"
 --password-command 'echo "hello with space"'
 --password-command 'echo "hello with ""quotes"" and space"'
+--password-command '"/path with a space/get-password.sh"'
 ```
 
 Note that when changing the configuration password the environment
@@ -2652,7 +2817,7 @@ or with `--backup-dir`. See `--backup-dir` for more info.
 
 For example
 
-```sh
+```console
 rclone copy --interactive /path/to/local/file remote:current --suffix .bak
 ```
 
@@ -2663,7 +2828,7 @@ If using `rclone sync` with `--suffix` and without `--backup-dir` then
 it is recommended to put a filter rule in excluding the suffix
 otherwise the `sync` will delete the backup files.
 
-```sh
+```console
 rclone sync --interactive /path/to/local/file remote:current --suffix .bak --exclude "*.bak"
 ```
 
@@ -2960,6 +3125,10 @@ knowing the local file is newer than the time it was last uploaded to the
 remote is sufficient. In those cases, this flag can speed up the process and
 reduce the number of API calls necessary.
 
+This flag is only supported on certain backends and will be silently
+ignored on unsupported backends. Supported backends include
+`azureblob`, `oracleobjectstorage`, `s3`, `swift`.
+
 Using this flag on a sync operation without also using `--update` would cause
 all files modified at any time other than the last upload time to be uploaded
 again, which is probably not what you want.
@@ -3046,7 +3215,7 @@ have to supply the password every time you start rclone.
 
 To add a password to your rclone configuration, execute `rclone config`.
 
-```sh
+```console
 $ rclone config
 Current remotes:
 
@@ -3060,7 +3229,7 @@ e/n/d/s/q>
 
 Go into `s`, Set configuration password:
 
-```sh
+```text
 e/n/d/s/q> s
 Your configuration is not encrypted.
 If you add a password, you will protect your login information to cloud services.
@@ -3133,7 +3302,7 @@ environment variables.  The script is supplied either via
 One useful example of this is using the `passwordstore` application
 to retrieve the password:
 
-```sh
+```console
 export RCLONE_PASSWORD_COMMAND="pass rclone/config"
 ```
 
@@ -3179,13 +3348,13 @@ at rest or transfer. Detailed instructions for popular OSes:
 
 - Generate and store a password
 
-  ```sh
+  ```console
   security add-generic-password -a rclone -s config -w $(openssl rand -base64 40)
   ```
 
 - Add the retrieval instruction to your `.zprofile` / `.profile`
 
-  ```sh
+  ```console
   export RCLONE_PASSWORD_COMMAND="/usr/bin/security find-generic-password -a rclone -s config -w"
   ```
 
@@ -3198,13 +3367,13 @@ at rest or transfer. Detailed instructions for popular OSes:
 
 - Generate and store a password
 
-  ```sh
+  ```console
   echo $(openssl rand -base64 40) | pass insert -m rclone/config
   ```
 
 - Add the retrieval instruction
 
-  ```sh
+  ```console
   export RCLONE_PASSWORD_COMMAND="/usr/bin/pass rclone/config"
   ```
 
@@ -3212,13 +3381,13 @@ at rest or transfer. Detailed instructions for popular OSes:
 
 - Generate and store a password
 
-  ```pwsh
+  ```powershell
   New-Object -TypeName PSCredential -ArgumentList "rclone", (ConvertTo-SecureString -String ([System.Web.Security.Membership]::GeneratePassword(40, 10)) -AsPlainText -Force) | Export-Clixml -Path "rclone-credential.xml"
   ```
 
 - Add the password retrieval instruction
 
-  ```pwsh
+  ```powershell
   [Environment]::SetEnvironmentVariable("RCLONE_PASSWORD_COMMAND", "[System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR((Import-Clixml -Path "rclone-credential.xml").Password))")
   ```
 
@@ -3261,7 +3430,9 @@ The available flags are:
 - `auth` dumps HTTP headers like `headers`, but also includes any `Authorization:`
   headers. This means the output will probably contain sensitive information.
   Use `headers` to dump without `Authorization:` headers. Can be very verbose.
-  Useful for debugging only.
+  Useful for debugging only. This flag also makes the debug log of the config
+  process (e.g. `rclone config -vv`) show answers to questions, passwords and
+  tokens which are otherwise redacted.
 - `bodies` dumps HTTP headers and bodies. May contain sensitive info.
   Can be very verbose.  Useful for debugging only. Note that the bodies
   are buffered in memory so don't use this for enormous files.
@@ -3279,6 +3450,26 @@ The available flags are:
 - `mapper` dumps the JSON blobs being sent to the program supplied with
   `--metadata-mapper` and received from it. It can be useful for debugging
   the metadata mapper interface.
+- `curl` dumps the HTTP request as a `curl` command. Can be used with
+  the other HTTP debugging flags (e.g. `requests`, `bodies`). By
+  default the auth will be masked - use with `auth` to have the curl
+  commands with authentication too.
+- `errors` only dumps the HTTP transactions which fail with a retryable
+  error - that is a transport error, an HTTP 429 (too many requests) or an
+  HTTP 5xx server error. The other dump flags control what is dumped, so
+  for example use `--dump errors,bodies` to dump the headers and bodies of
+  failed transactions only. On its own `--dump errors` dumps the headers.
+  This lets you capture first-failure diagnostics without the noise of
+  dumping every transaction. May contain sensitive info.
+- `trace` logs connection level events for each HTTP transaction using Go's
+  `net/http/httptrace` - DNS resolution, TCP connect, TLS handshake (including
+  the negotiated TLS version, cipher, ALPN protocol and server certificate),
+  connection reuse, request write and time to first response byte. Each line is
+  tagged with the time elapsed since the start of the transaction so you can see
+  where the time goes. This is complementary to the other dump flags: it shows
+  how the connection behaved rather than what was sent, so it is useful for
+  debugging connectivity, DNS, TLS, proxy and keep-alive problems. It does not
+  dump headers or bodies - combine it with `headers` or `bodies` for that.
 
 ## Filtering
 
@@ -3294,6 +3485,7 @@ For the filtering options
 - `--include-from`
 - `--files-from`
 - `--files-from-raw`
+- `--files-from0`
 - `--min-size`
 - `--max-size`
 - `--min-age`
@@ -3457,14 +3649,16 @@ for each backend.
 To find the name of the environment variable, you need to set, take
 `RCLONE_CONFIG_` + name of remote + `_` + name of config file option
 and make it all uppercase.
-Note one implication here is the remote's name must be
-convertible into a valid environment variable name,
-so it can only contain letters, digits, or the `_` (underscore) character.
+Note that the name of the remote is only converted to uppercase - characters
+such as `-` and `.` are not changed to `_` - so a remote called `my-remote`
+needs `RCLONE_CONFIG_MY-REMOTE_TYPE`. Many shells only allow letters, digits
+and `_` (underscore) in environment variable names, so it is best to use only
+those characters in the name of a remote you want to configure this way.
 
 For example, to configure an S3 remote named `mys3:` without a config
 file (using unix ways of setting environment variables):
 
-```sh
+```console
 $ export RCLONE_CONFIG_MYS3_TYPE=s3
 $ export RCLONE_CONFIG_MYS3_ACCESS_KEY_ID=XXX
 $ export RCLONE_CONFIG_MYS3_SECRET_ACCESS_KEY=XXX
@@ -3484,7 +3678,7 @@ You must write the name in uppercase in the environment variable, but
 as seen from example above it will be listed and can be accessed in
 lowercase, while you can also refer to the same remote in uppercase:
 
-```sh
+```console
 $ rclone lsd mys3:
           -1 2016-09-21 12:54:21        -1 my-bucket
 $ rclone lsd MYS3:
@@ -3499,7 +3693,7 @@ set the access key of all remotes using S3, including myS3Crypt.
 Note also that now rclone has [connection strings](#connection-strings),
 it is probably easier to use those instead which makes the above example
 
-```sh
+```console
 rclone lsd :s3,access_key_id=XXX,secret_access_key=XXX:
 ```
 

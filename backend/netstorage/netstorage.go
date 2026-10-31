@@ -87,7 +87,7 @@ Please choose the 'y' option to set your own password then enter your secret.`,
 
 var commandHelp = []fs.CommandHelp{{
 	Name:  "du",
-	Short: "Return disk usage information for a specified directory",
+	Short: "Return disk usage information for a specified directory.",
 	Long: `The usage information returned, includes the targeted directory as well as all
 files stored in any sub-directories that may exist.`,
 }, {
@@ -96,7 +96,12 @@ files stored in any sub-directories that may exist.`,
 	Long: `The desired path location (including applicable sub-directories) ending in
 the object that will be the target of the symlink (for example, /links/mylink).
 Include the file extension for the object, if applicable.
-` + "`rclone backend symlink <src> <path>`",
+
+Usage example:
+
+` + "```console" + `
+rclone backend symlink <src> <path>
+` + "```",
 },
 }
 
@@ -231,9 +236,9 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	if err != nil {
 		return nil, fmt.Errorf("couldn't parse URL %q: %w", opt.Endpoint, err)
 	}
-	u, err := rest.URLJoin(base, rest.URLPathEscape(root))
+	u, err := rest.URLJoinRoot(base, root)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't join URL %q and %q: %w", base.String(), root, err)
+		return nil, err
 	}
 	client := fshttp.NewClient(ctx)
 
@@ -568,10 +573,12 @@ func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) (
 				fs.Errorf(nil, "Unable to parse URL %q: %v", f.endpointURL, err)
 				return fs.ErrorDirNotFound
 			}
-			resumeURL, err := rest.URLJoin(u, rest.URLPathEscape(resumeStart))
+			// A bad resume start must fail the listing rather than
+			// return fs.ErrorDirNotFound which sync treats as an empty
+			// directory
+			resumeURL, err := rest.URLJoinRoot(u, resumeStart)
 			if err != nil {
-				fs.Errorf(nil, "Unable to join URL %q for resumeStart %s: %v", f.endpointURL, resumeStart, err)
-				return fs.ErrorDirNotFound
+				return fmt.Errorf("unable to join URL %q for resumeStart %q: %w", f.endpointURL, resumeStart, err)
 			}
 			URL = resumeURL.String()
 		}
@@ -1045,14 +1052,15 @@ func (o *Object) netStorageUploadRequest(ctx context.Context, in io.Reader, src 
 
 	// Invalidate stat cache
 	o.fs.deleteStatCache(URL)
-	if o.size == -1 {
-		files, err := o.fs.netStorageStatRequest(ctx, URL, false)
-		if err != nil {
-			return nil
-		}
-		if files != nil {
-			o.size = files[0].Size
-		}
+	// Stat the uploaded file to get the md5 the server computed and
+	// the size for streaming uploads.
+	files, err := o.fs.netStorageStatRequest(ctx, URL, false)
+	if err != nil {
+		return nil
+	}
+	if files != nil {
+		o.size = files[0].Size
+		o.md5sum = files[0].Md5
 	}
 	return nil
 }

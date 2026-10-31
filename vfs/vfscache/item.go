@@ -17,6 +17,7 @@ import (
 	"github.com/rclone/rclone/lib/ranges"
 	"github.com/rclone/rclone/vfs/vfscache/downloaders"
 	"github.com/rclone/rclone/vfs/vfscache/writeback"
+	"github.com/rclone/rclone/vfs/vfscommon"
 )
 
 // NB as Cache and Item are tightly linked it is necessary to have a
@@ -68,6 +69,8 @@ type Item struct {
 	pendingAccesses int                      // number of threads - cache reset not allowed if not zero
 	modified        bool                     // set if the file has been modified since the last Open
 	beingReset      bool                     // cache cleaner is resetting the cache file, access not allowed
+	graceTimer      *time.Timer              // timer for delayed close after grace period
+	closing         chan struct{}            // non-nil while a grace-period close is tearing the handle down, closed when done
 }
 
 // Info is persisted to backing store
@@ -91,6 +94,7 @@ const (
 	SkippedDirty         ResetResult = iota // Dirty item cannot be reset
 	SkippedPendingAccess                    // Reset pending access can lead to deadlock
 	SkippedEmpty                            // Reset empty item does not save space
+	SkippedGrace                            // Item is in grace period, treat as in-use
 	RemovedNotInUse                         // Item not used. Remove instead of reset
 	ResetFailed                             // Reset failed with an error
 	ResetComplete                           // Reset completed successfully
@@ -98,7 +102,7 @@ const (
 
 func (rr ResetResult) String() string {
 	return [...]string{"Dirty item skipped", "In-access item skipped", "Empty item skipped",
-		"Not-in-use item removed", "Item reset failed", "Item reset completed"}[rr]
+		"Grace period item skipped", "Not-in-use item removed", "Item reset failed", "Item reset completed"}[rr]
 }
 
 func (v Items) Len() int      { return len(v) }
@@ -468,7 +472,10 @@ func (item *Item) _createFile(osPath string) (err error) {
 	}
 	item.modified = false
 	// t0 := time.Now()
-	fd, err := file.OpenFile(osPath, os.O_RDWR, 0600)
+	// Use O_CREATE so the cache file is recreated if it has been removed
+	// underneath us (e.g. _checkObject dropped a stale entry, or an external
+	// deletion), rather than failing the open with a hard IO error.
+	fd, err := file.OpenFile(osPath, os.O_RDWR|os.O_CREATE, 0600)
 	// fs.Debugf(item.name, "OpenFile took %v", time.Since(t0))
 	if err != nil {
 		return fmt.Errorf("vfs cache item: open failed: %w", err)
@@ -494,7 +501,7 @@ func (item *Item) _createFile(osPath string) (err error) {
 // Open the local file from the object passed in.  Wraps open()
 // to provide recovery from out of space error.
 func (item *Item) Open(o fs.Object) (err error) {
-	for range fs.GetConfig(context.TODO()).LowLevelRetries {
+	for range fs.GetConfig(item.c.ctx).LowLevelRetries {
 		item.preAccess()
 		err = item.open(o)
 		item.postAccess()
@@ -518,6 +525,15 @@ func (item *Item) open(o fs.Object) (err error) {
 	item.mu.Lock()
 	defer item.mu.Unlock()
 
+	// Wait for any in-progress grace-period close to finish so we start
+	// from a fully closed item rather than racing the fd teardown.
+	for item.closing != nil {
+		closing := item.closing
+		item.mu.Unlock()
+		<-closing
+		item.mu.Lock()
+	}
+
 	item.info.ATime = time.Now()
 
 	osPath, err := item.c.createItemDir(item.name) // No locking in Cache
@@ -533,6 +549,43 @@ func (item *Item) open(o fs.Object) (err error) {
 	item.opens++
 	if item.opens != 1 {
 		return nil
+	}
+
+	// Check if recovering from grace period (fd and downloaders still alive)
+	if item.graceTimer != nil {
+		item.graceTimer.Stop()
+		item.graceTimer = nil
+		// If the cache file still exists, reuse fd and downloaders.
+		// _checkObject (called above) may have removed the cache
+		// file if the remote fingerprint changed (e.g. modtime
+		// changed during a rename/move). In that case we must
+		// close the stale fd and fall through to _createFile.
+		if item._exists() {
+			return nil
+		}
+		fs.Debugf(item.name, "vfs cache: cache file vanished during grace period, recreating")
+		// The backing file is gone, so any ranges are invalid.
+		item.info.Rs = nil
+		// It also can't be dirty if the data no longer exists.
+		item.info.Dirty = false
+		if item.fd != nil {
+			_ = item.fd.Close()
+			item.fd = nil
+		}
+		if item.downloaders != nil {
+			dls := item.downloaders
+			item.downloaders = nil
+			item.mu.Unlock()
+			_ = dls.Close(nil)
+			item.mu.Lock()
+		}
+		// _checkObject sized the old fd, so size the new file here
+		// or GetSize reads 0 and ReadAt returns unfetched zeros.
+		err = item._truncateToCurrentSize()
+		if err != nil {
+			item.opens--
+			return fmt.Errorf("vfs cache item: recreate cache file failed: %w", err)
+		}
 	}
 
 	err = item._createFile(osPath)
@@ -567,7 +620,7 @@ func (item *Item) open(o fs.Object) (err error) {
 
 	// Create the downloaders
 	if item.o != nil {
-		item.downloaders = downloaders.New(item, item.c.opt, item.name, item.o)
+		item.downloaders = downloaders.New(item.c.ctx, item, item.c.opt, item.name, item.o)
 	}
 
 	return err
@@ -647,10 +700,7 @@ func (item *Item) Close(storeFn StoreFn) (err error) {
 	// defer log.Trace(item.o, "Item.Close")("err=%v", &err)
 	item.preAccess()
 	defer item.postAccess()
-	var (
-		downloaders   *downloaders.Downloaders
-		syncWriteBack = item.c.opt.WriteBack <= 0
-	)
+	syncWriteBack := item.c.opt.WriteBack <= 0
 	item.mu.Lock()
 	defer item.mu.Unlock()
 
@@ -662,6 +712,57 @@ func (item *Item) Close(storeFn StoreFn) (err error) {
 	} else if item.opens > 0 {
 		return nil
 	}
+
+	// opens == 0: check for grace period (only for non-dirty files,
+	// dirty files need immediate close so writeback can proceed)
+	gracePeriod := time.Duration(item.c.opt.HandleCaching)
+	if gracePeriod > 0 && !item.info.Dirty {
+		item.graceTimer = time.AfterFunc(gracePeriod, item.closeAfterGrace)
+		return nil
+	}
+
+	return item._actualClose(storeFn, syncWriteBack)
+}
+
+// closeAfterGrace is called by the grace timer to perform the actual close.
+//
+// Grace period only applies to non-dirty files, so storeFn (only
+// needed for writeback) and syncWriteBack are not relevant.
+func (item *Item) closeAfterGrace() {
+	defer vfscommon.RecoverPanic(item.name, nil)
+	item.mu.Lock()
+	defer item.mu.Unlock()
+
+	// Someone re-opened, another timer took over, or a reset
+	// already cancelled the grace timer and cleaned up.
+	if item.opens > 0 || item.graceTimer == nil {
+		return
+	}
+	item.graceTimer = nil
+
+	// _actualClose drops item.mu while it tears down the downloaders,
+	// during which the fd is still open. Publish that a close is in
+	// progress so a concurrent open waits rather than tripping over the
+	// half-closed handle.
+	item.closing = make(chan struct{})
+	// Release the waiters however this ends: if a panic in the backend is
+	// recovered above, leaving item.closing open would block every later
+	// open of this file forever.
+	defer func() {
+		close(item.closing)
+		item.closing = nil
+	}()
+	err := item._actualClose(nil, false)
+	if err != nil {
+		fs.Errorf(item.name, "vfs cache: close after grace period failed: %v", err)
+	}
+}
+
+// _actualClose performs the actual close operations on the item.
+//
+// Call with item.mu held. May temporarily unlock item.mu.
+func (item *Item) _actualClose(storeFn StoreFn, syncWriteBack bool) (err error) {
+	var dls *downloaders.Downloaders
 
 	// Update the size on close
 	_, _ = item._getSize()
@@ -690,7 +791,7 @@ func (item *Item) Close(storeFn StoreFn) (err error) {
 	}
 
 	// Close the downloaders
-	if downloaders = item.downloaders; downloaders != nil {
+	if dls = item.downloaders; dls != nil {
 		item.downloaders = nil
 		// FIXME need to unlock to kill downloader - should we
 		// re-arrange locking so this isn't necessary?  maybe
@@ -700,7 +801,7 @@ func (item *Item) Close(storeFn StoreFn) (err error) {
 		// downloader.Write calls ensure which needs the lock
 		// close downloader with mutex unlocked
 		item.mu.Unlock()
-		checkErr(downloaders.Close(nil))
+		checkErr(dls.Close(nil))
 		item.mu.Lock()
 	}
 
@@ -720,7 +821,7 @@ func (item *Item) Close(storeFn StoreFn) (err error) {
 	// set the modtime from the object otherwise set it from the info
 	if item._exists() {
 		if !item.info.Dirty && item.o != nil {
-			item._setModTime(item.o.ModTime(context.Background()))
+			item._setModTime(item.o.ModTime(item.c.ctx))
 		} else {
 			item._setModTime(item.info.ModTime)
 		}
@@ -731,7 +832,7 @@ func (item *Item) Close(storeFn StoreFn) (err error) {
 		fs.Infof(item.name, "vfs cache: queuing for upload in %v", item.c.opt.WriteBack)
 		if syncWriteBack {
 			// do synchronous writeback
-			checkErr(item._store(context.Background(), storeFn))
+			checkErr(item._store(item.c.ctx, storeFn))
 		} else {
 			// asynchronous writeback
 			item.c.writeback.SetID(&item.writeBackID)
@@ -811,7 +912,7 @@ func (item *Item) _checkObject(o fs.Object) error {
 			// OK
 		}
 	} else {
-		remoteFingerprint := fs.Fingerprint(context.TODO(), o, item.c.opt.FastFingerprint)
+		remoteFingerprint := fs.Fingerprint(item.c.ctx, o, item.c.opt.FastFingerprint)
 		fs.Debugf(item.name, "vfs cache: checking remote fingerprint %q against cached fingerprint %q", remoteFingerprint, item.info.Fingerprint)
 		if item.info.Fingerprint != "" {
 			// remote object && local object
@@ -914,7 +1015,7 @@ func (item *Item) RemoveNotInUse(maxAge time.Duration, emptyOnly bool) (removed 
 	spaceFreed = 0
 	removed = false
 
-	if item.opens != 0 || item.info.Dirty {
+	if item.opens != 0 || item.info.Dirty || item.graceTimer != nil {
 		return
 	}
 
@@ -950,7 +1051,9 @@ func (item *Item) Reset() (rr ResetResult, spaceFreed int64, err error) {
 	defer item.mu.Unlock()
 
 	// The item is not being used now.  Just remove it instead of resetting it.
-	if item.opens == 0 && !item.info.Dirty {
+	// Items in their grace period are treated as in-use; the cache
+	// cleaner will pick them up on the next pass.
+	if item.opens == 0 && !item.info.Dirty && item.graceTimer == nil {
 		spaceFreed = item.info.Rs.Size()
 		if item._remove("Removing old cache file not in use") {
 			fs.Errorf(item.name, "item removed when it was writing/uploaded")
@@ -961,6 +1064,12 @@ func (item *Item) Reset() (rr ResetResult, spaceFreed int64, err error) {
 	// do not reset dirty file
 	if item.info.Dirty {
 		return SkippedDirty, 0, nil
+	}
+
+	// Items in their grace period are treated as in-use; the cache
+	// cleaner will pick them up on the next pass.
+	if item.graceTimer != nil {
+		return SkippedGrace, 0, nil
 	}
 
 	/* A wait on pendingAccessCnt to become 0 can lead to deadlock when an item.Open bumps
@@ -1058,7 +1167,7 @@ func (item *Item) Reset() (rr ResetResult, spaceFreed int64, err error) {
 
 	// Create the downloaders
 	if item.o != nil {
-		item.downloaders = downloaders.New(item, item.c.opt, item.name, item.o)
+		item.downloaders = downloaders.New(item.c.ctx, item, item.c.opt, item.name, item.o)
 	}
 
 	/* The item will stay in the beingReset state if we get an error that prevents us from
@@ -1138,6 +1247,21 @@ func (item *Item) _ensure(offset, size int64) (err error) {
 	if offset+size > item.info.Size {
 		size = item.info.Size - offset
 	}
+	// Check to see if we are about to request data beyond of the size of
+	// the remote object. This can happen if the the cached range metadata
+	// is out of sync with the cache file after an unclean shutdown.
+	if item.o != nil {
+		if remoteSize := item.o.Size(); remoteSize >= 0 && offset+size > remoteSize {
+			beyond := ranges.Range{Pos: remoteSize, Size: offset + size - remoteSize}
+			if !item.info.Rs.Present(beyond) {
+				fs.Errorf(item.name, "vfs cache: cached file (%d) is unexpectedly larger than the remote object (%d). The cached file is likely corrupted after an unclean shutdown; recovering the %d bytes available from the remote", offset+size, remoteSize, remoteSize)
+			}
+			size = remoteSize - offset
+		}
+	}
+	if size <= 0 {
+		return nil
+	}
 	r := ranges.Range{Pos: offset, Size: size}
 	present := item.info.Rs.Present(r)
 	/* This statement simulates a cache space error for test purpose */
@@ -1164,13 +1288,13 @@ func (item *Item) _ensure(offset, size int64) (err error) {
 		// See: https://github.com/rclone/rclone/issues/6190
 		// See: https://github.com/rclone/rclone/issues/6235
 		if item.o == nil {
-			o, err := item.c.fremote.NewObject(context.Background(), item.name)
+			o, err := item.c.fremote.NewObject(item.c.ctx, item.name)
 			if err != nil {
 				return err
 			}
 			item.o = o
 		}
-		item.downloaders = downloaders.New(item, item.c.opt, item.name, item.o)
+		item.downloaders = downloaders.New(item.c.ctx, item, item.c.opt, item.name, item.o)
 	}
 	return item.downloaders.Download(r)
 }
@@ -1198,7 +1322,7 @@ func (item *Item) _updateFingerprint() {
 		return
 	}
 	oldFingerprint := item.info.Fingerprint
-	item.info.Fingerprint = fs.Fingerprint(context.TODO(), item.o, item.c.opt.FastFingerprint)
+	item.info.Fingerprint = fs.Fingerprint(item.c.ctx, item.o, item.c.opt.FastFingerprint)
 	if oldFingerprint != item.info.Fingerprint {
 		fs.Debugf(item.o, "vfs cache: fingerprint now %q", item.info.Fingerprint)
 	}
@@ -1246,7 +1370,7 @@ func (item *Item) GetModTime() (modTime time.Time, err error) {
 func (item *Item) ReadAt(b []byte, off int64) (n int, err error) {
 	n = 0
 	var expBackOff int
-	for retries := range fs.GetConfig(context.TODO()).LowLevelRetries {
+	for retries := range fs.GetConfig(item.c.ctx).LowLevelRetries {
 		item.preAccess()
 		n, err = item.readAt(b, off)
 		item.postAccess()
@@ -1344,10 +1468,24 @@ func (item *Item) WriteAt(b []byte, off int64) (n int, err error) {
 //
 // This is used by the downloader to write bytes to the file.
 //
+// Bytes past the end of the item are not written; they are counted
+// as processed and skipped.
+//
 // It returns n the total bytes processed and skipped the number of
 // bytes which were processed but not actually written to the file.
 func (item *Item) WriteAtNoOverwrite(b []byte, off int64) (n int, skipped int, err error) {
 	item.mu.Lock()
+
+	// Don't write past the end of the item. If the file was shrunk
+	// with Truncate while the remote object is still longer, the
+	// downloader would otherwise grow the cache file back to the
+	// size of the remote object.
+	beyond := 0
+	if end := off + int64(len(b)); end > item.info.Size {
+		keep := max(item.info.Size-off, 0)
+		beyond = len(b) - int(keep)
+		b = b[:keep]
+	}
 
 	var (
 		// Range we wish to write
@@ -1390,6 +1528,10 @@ func (item *Item) WriteAtNoOverwrite(b []byte, off int64) (n int, skipped int, e
 		}
 	}
 	item.mu.Unlock()
+	if err == nil {
+		n += beyond
+		skipped += beyond
+	}
 	return n, skipped, err
 }
 
@@ -1432,6 +1574,7 @@ func (item *Item) rename(name string, newName string, newObj fs.Object) (err err
 	// Set internal state
 	item.name = newName
 	item.o = newObj
+	item._updateFingerprint()
 
 	// Rename cache file if it exists
 	err = rename(item.c.toOSPath(name), item.c.toOSPath(newName)) // No locking in Cache

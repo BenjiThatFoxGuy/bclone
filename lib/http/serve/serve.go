@@ -39,6 +39,26 @@ func Object(w http.ResponseWriter, r *http.Request, o fs.Object) {
 	modTime := o.ModTime(r.Context())
 	w.Header().Set("Last-Modified", modTime.UTC().Format(http.TimeFormat))
 
+	// Set metadata headers if present
+	metadata, err := fs.GetMetadata(r.Context(), o)
+	if err != nil {
+		fs.Debugf(o, "Request get metadata error: %v", err)
+	}
+	if metadata != nil {
+		if metadata["content-disposition"] != "" {
+			w.Header().Set("Content-Disposition", metadata["content-disposition"])
+		}
+		if metadata["cache-control"] != "" {
+			w.Header().Set("Cache-Control", metadata["cache-control"])
+		}
+		if metadata["content-language"] != "" {
+			w.Header().Set("Content-Language", metadata["content-language"])
+		}
+		if metadata["content-encoding"] != "" {
+			w.Header().Set("Content-Encoding", metadata["content-encoding"])
+		}
+	}
+
 	if r.Method == "HEAD" {
 		return
 	}
@@ -47,7 +67,9 @@ func Object(w http.ResponseWriter, r *http.Request, o fs.Object) {
 	code := http.StatusOK
 	size := o.Size()
 	var options []fs.OpenOption
-	if rangeRequest := r.Header.Get("Range"); rangeRequest != "" {
+	// Like http.ServeContent, ignore ranges on empty objects as some
+	// clients send a Range header with every request
+	if rangeRequest := r.Header.Get("Range"); rangeRequest != "" && o.Size() != 0 {
 		//fs.Debugf(nil, "Range: request %q", rangeRequest)
 		option, err := fs.ParseRangeOption(rangeRequest)
 		if err != nil {
@@ -57,6 +79,15 @@ func Object(w http.ResponseWriter, r *http.Request, o fs.Object) {
 		}
 		options = append(options, option)
 		offset, limit := option.Decode(o.Size())
+		// RFC 9110 section 15.5.17: a range starting at or beyond the
+		// end, or ending before it starts, can't be satisfied
+		if (option.End >= 0 && option.Start > option.End) || (o.Size() > 0 && offset >= o.Size()) {
+			if o.Size() > 0 {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", o.Size()))
+			}
+			http.Error(w, http.StatusText(http.StatusRequestedRangeNotSatisfiable), http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
 		end := o.Size() // exclusive
 		if limit >= 0 {
 			end = offset + limit

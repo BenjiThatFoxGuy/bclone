@@ -9,9 +9,6 @@ type: page
 Rclone is single executable (`rclone`, or `rclone.exe` on Windows) that you can
 simply download as a zip archive and extract into a location of your choosing.
 See the [install](https://rclone.org/install/) documentation for more details.
-We also offer a secure [enterprise-grade, zero CVE docker
-image](https://securebuild.com/images/rclone) through our partner
-[SecureBuild](https://securebuild.com/blog/introducing-securebuild).
 
 ## Release {{% version %}} OS requirements {#osrequirements}
 
@@ -56,13 +53,13 @@ signatures on the release.
 
 To install rclone on Linux/macOS/BSD systems, run:
 
-```sh
+```console
 sudo -v ; curl https://rclone.org/install.sh | sudo bash
 ```
 
 For beta installation, run:
 
-```sh
+```console
 sudo -v ; curl https://rclone.org/install.sh | sudo bash -s beta
 ```
 
@@ -143,6 +140,7 @@ The latest `rclone` version working for:
 | Windows Server 2012 | v1.63.1 |
 | Windows XP | v1.42 |
 | Windows Vista | v1.42 |
+| macOS 10.15 (Catalina) | v1.70.3 |
 | macOS 10.14 (Mojave) | v1.63.1 |
 | macOS 10.13 (High Sierra) | v1.63.1 |
 | macOS 10.12 (Sierra) | v1.56.0 |

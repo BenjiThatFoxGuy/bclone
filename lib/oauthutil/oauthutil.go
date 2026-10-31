@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fshttp"
+	"github.com/rclone/rclone/fs/rc"
 	"github.com/rclone/rclone/lib/random"
 	"github.com/skratchdot/open-golang/open"
 	"golang.org/x/oauth2"
@@ -30,6 +32,15 @@ import (
 var (
 	// templateString is the template used in the authorization webserver
 	templateString string
+
+	// oauthCancelFn stores the cancel function for the currently active OAuth flow
+	oauthCancelFn context.CancelFunc
+	// oauthCancelMu protects oauthCancelFn, oauthURL and oauthVerifier
+	oauthCancelMu sync.Mutex
+	// oauthURL stores the URL for the currently active OAuth flow
+	oauthURL string
+	// oauthVerifier stores the PKCE verifier for the remote setup path
+	oauthVerifier string
 )
 
 const (
@@ -101,6 +112,7 @@ type Config struct {
 	RedirectURL          string
 	ClientCredentialFlow bool
 	AuthStyle            oauth2.AuthStyle
+	UsePKCE              bool // If set, use PKCE (RFC 7636) for the authorization code flow
 }
 
 // MakeOauth2Config makes an oauth2.Config from our config
@@ -158,6 +170,11 @@ var SharedOptions = []fs.Option{{
 	Help:     "Use client credentials OAuth flow.\n\nThis will use the OAUTH2 client Credentials Flow as described in RFC 6749.\n\nNote that this option is NOT supported by all backends.",
 	Advanced: true,
 }}
+
+// SharedOptionsPKCE are shared between backends that use PKCE OAuth2 flow, without Client Secret.
+var SharedOptionsPKCE = slices.DeleteFunc(slices.Clone(SharedOptions), func(o fs.Option) bool {
+	return o.Name == config.ConfigClientSecret || o.Name == config.ConfigClientCredentials
+})
 
 // oldToken contains an end-user's tokens.
 // This is the data you must store to persist authentication.
@@ -476,6 +493,43 @@ func OverrideCredentials(name string, m configmap.Mapper, origConfig *Config) (n
 	return newConfig, changed
 }
 
+// SharedClientIDWarning warns the user that this remote is relying on
+// rclone's built-in shared OAuth client_id.
+//
+// It only warns when the user has not configured their own client_id
+// (config.ConfigClientID is blank in the config), so it must only be
+// called from the code path that actually uses the shared client_id -
+// not for service account, environment or anonymous auth which don't.
+//
+// name is the remote's name, service is the human readable name of the
+// service (eg "Google Drive") and helpURL points at the docs describing
+// how to make your own client_id.
+func SharedClientIDWarning(name, service, helpURL string, m configmap.Mapper) {
+	if clientID, _ := m.Get(config.ConfigClientID); clientID != "" {
+		return
+	}
+	fs.Logf(name, "This remote uses rclone's shared %s client_id, which is being retired and will stop working during 2026. Create your own client_id to avoid interruption: %s", service, helpURL)
+}
+
+// SharedClientIDConfigConfirm returns a config wizard Yes/No step
+// warning that this remote would use rclone's shared client_id (which
+// is being retired) and asking whether to continue with it anyway. It
+// should only be used when the user has left client_id blank on the
+// OAuth path.
+//
+// state is the config state to go to next, service is the human
+// readable name of the service (eg "Google Drive") and helpURL points
+// at the docs describing how to make your own client_id.
+//
+// The question defaults to No to steer the user towards making their
+// own client_id.
+func SharedClientIDConfigConfirm(state, service, helpURL string) (*fs.ConfigOut, error) {
+	return fs.ConfigConfirm(state, false, "config_shared_client_id", fmt.Sprintf(`rclone's shared %s client_id is being retired and will stop working during 2026.
+Create your own to avoid interruption: %s
+
+Continue using the shared client_id anyway?`, service, helpURL))
+}
+
 // NewClientWithBaseClient gets a token from the config file and
 // configures a Client with it.  It returns the client and a
 // TokenSource which Invalidate may need to be called on.  It uses the
@@ -567,7 +621,6 @@ type Options struct {
 	NoOffline    bool                    // If set then "access_type=offline" parameter is not passed
 	CheckAuth    CheckAuthFn             // When the AuthResult is known the checkAuth function is called if set
 	OAuth2Opts   []oauth2.AuthCodeOption // extra oauth2 options
-	StateBlankOK bool                    // If set, state returned as "" is deemed to be OK
 }
 
 // ConfigOut returns a config item suitable for the backend config
@@ -624,7 +677,7 @@ func ConfigOAuth(ctx context.Context, name string, m configmap.Mapper, ri *fs.Re
 		// See if already have a token
 		tokenString, ok := m.Get("token")
 		if ok && tokenString != "" {
-			return fs.ConfigConfirm(newState("*oauth-confirm"), true, "config_refresh_token", "Already have a token - refresh?")
+			return fs.ConfigConfirm(newState("*oauth-confirm"), true, "config_refresh_token", "Token already configured - replace it?")
 		}
 		return fs.ConfigGoto(newState("*oauth-confirm"))
 	case "*oauth-confirm":
@@ -652,10 +705,14 @@ func ConfigOAuth(ctx context.Context, name string, m configmap.Mapper, ri *fs.Re
 			return nil, err
 		}
 		if noWebserverNeeded(opt.OAuth2Config) {
-			authURL, _, err := getAuthURL(name, m, opt.OAuth2Config, opt)
+			authURL, _, pkceVerifier, err := getAuthURL(name, m, opt.OAuth2Config, opt)
 			if err != nil {
 				return nil, err
 			}
+			// Remember the verifier for the exchange in *oauth-do
+			oauthCancelMu.Lock()
+			oauthVerifier = pkceVerifier
+			oauthCancelMu.Unlock()
 			return fs.ConfigInput(newState("*oauth-do"), "config_verification_code", fmt.Sprintf("Verification code\n\nGo to this URL, authenticate then paste the code here.\n\n%s\n", authURL))
 		}
 		var out strings.Builder
@@ -671,8 +728,9 @@ version recommended):
 		// Find the overridden options
 		inM := ri.Options.NonDefault(m)
 		delete(inM, fs.ConfigToken) // delete token as we are refreshing it
+		ci := fs.GetConfig(ctx)
 		for k, v := range inM {
-			fs.Debugf(nil, "sending %s = %q", k, v)
+			fs.Debugf(nil, "sending %s = %s", k, fs.RedactOptionValue(ci, ri.Options.Get(k), v))
 		}
 		// Encode them into a string
 		mCopyString, err := inM.Encode()
@@ -703,9 +761,10 @@ version recommended):
 		}
 		// Save the config updates
 		if newFormat {
+			ci := fs.GetConfig(ctx)
 			for k, v := range outM {
 				m.Set(k, v)
-				fs.Debugf(nil, "received %s = %q", k, v)
+				fs.Debugf(nil, "received %s = %s", k, fs.RedactOptionValue(ci, ri.Options.Get(k), v))
 			}
 		} else {
 			m.Set(fs.ConfigToken, code)
@@ -738,6 +797,7 @@ version recommended):
 		if changed {
 			fs.Logf(nil, "Make sure your Redirect URL is set to %q in your custom config.\n", oauthConfig.RedirectURL)
 		}
+		var pkceVerifier string
 		if oauthConfig.ClientCredentialFlow {
 			err = clientCredentialsFlowGetToken(ctx, name, m, oauthConfig, opt)
 			if err != nil {
@@ -746,12 +806,18 @@ version recommended):
 		} else {
 			if code == "" {
 				oauthConfig = fixRedirect(oauthConfig)
-				code, err = configSetup(ctx, ri.Name, name, m, oauthConfig, opt)
+				code, pkceVerifier, err = configSetup(ctx, ri.Name, name, m, oauthConfig, opt)
 				if err != nil {
 					return nil, fmt.Errorf("config failed to refresh token: %w", err)
 				}
+			} else {
+				// The code was pasted in: pick up the verifier from *oauth-remote
+				oauthCancelMu.Lock()
+				pkceVerifier = oauthVerifier
+				oauthVerifier = ""
+				oauthCancelMu.Unlock()
 			}
-			err = configExchange(ctx, name, m, oauthConfig, code)
+			err = configExchange(ctx, name, m, oauthConfig, code, pkceVerifier)
 			if err != nil {
 				return nil, err
 			}
@@ -770,19 +836,79 @@ func init() {
 	fs.ConfigOAuth = ConfigOAuth
 }
 
+func init() {
+	rc.Add(rc.Call{
+		Path:  "config/oauthstop",
+		Fn:    rcOAuthStop,
+		Title: "Stop any running OAuth authentication server.",
+		Help: `Stops the OAuth authentication server if one is running.
+
+This can be used to recover from an interrupted OAuth flow without
+restarting rclone. If no OAuth authentication is in progress, an error
+is returned.
+`,
+	})
+}
+
+func rcOAuthStop(ctx context.Context, in rc.Params) (out rc.Params, err error) {
+	oauthCancelMu.Lock()
+	defer oauthCancelMu.Unlock()
+	if oauthCancelFn == nil {
+		return nil, errors.New("no oauth authentication is in progress")
+	}
+	oauthCancelFn()
+	oauthCancelFn = nil
+	oauthURL = ""
+	return nil, nil
+}
+
+func init() {
+	rc.Add(rc.Call{
+		Path:  "config/oauthstatus",
+		Fn:    rcOAuthStatus,
+		Title: "Get the status of the OAuth authentication server.",
+		Help: `Returns the current status of the OAuth authentication server.
+
+Returns a JSON object:
+- status - "running" or "stopped"
+- authUrl - URL for the authorization (only if status is "running")
+
+Eg
+
+    {
+        "status": "running",
+        "authUrl": "http://127.0.0.1:53682/auth?state=..."
+    }
+`,
+	})
+}
+
+func rcOAuthStatus(ctx context.Context, in rc.Params) (out rc.Params, err error) {
+	oauthCancelMu.Lock()
+	defer oauthCancelMu.Unlock()
+	status := "stopped"
+	params := rc.Params{"status": status}
+	if oauthCancelFn != nil {
+		status = "running"
+		params["status"] = status
+		params["authUrl"] = oauthURL
+	}
+	return params, nil
+}
+
 // Return true if can run without a webserver and just entering a code
 func noWebserverNeeded(oauthConfig *Config) bool {
 	return oauthConfig.RedirectURL == TitleBarRedirectURL
 }
 
 // get the URL we need to send the user to
-func getAuthURL(name string, m configmap.Mapper, oauthConfig *Config, opt *Options) (authURL string, state string, err error) {
+func getAuthURL(name string, m configmap.Mapper, oauthConfig *Config, opt *Options) (authURL string, state string, pkceVerifier string, err error) {
 	oauthConfig, _ = OverrideCredentials(name, m, oauthConfig)
 
 	// Make random state
 	state, err = random.Password(128)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	// Create the configuration required for the OAuth flow
@@ -793,8 +919,15 @@ func getAuthURL(name string, m configmap.Mapper, oauthConfig *Config, opt *Optio
 	if !opt.NoOffline {
 		opts = append(opts, oauth2.AccessTypeOffline)
 	}
+
+	// Generate PKCE challenge if needed
+	if oauthConfig.UsePKCE {
+		pkceVerifier = oauth2.GenerateVerifier()
+		opts = append(opts, oauth2.S256ChallengeOption(pkceVerifier))
+	}
+
 	authURL = oauth2Conf.AuthCodeURL(state, opts...)
-	return authURL, state, nil
+	return authURL, state, pkceVerifier, nil
 }
 
 // If TitleBarRedirect is set but we are doing a real oauth, then
@@ -836,27 +969,41 @@ func clientCredentialsFlowGetToken(ctx context.Context, name string, m configmap
 // If opt is nil it will use the default Options.
 //
 // It will run an internal webserver to receive the results
-func configSetup(ctx context.Context, id, name string, m configmap.Mapper, oauthConfig *Config, opt *Options) (string, error) {
+func configSetup(ctx context.Context, id, name string, m configmap.Mapper, oauthConfig *Config, opt *Options) (code string, pkceVerifier string, err error) {
 	if opt == nil {
 		opt = &Options{}
 	}
 	authorizeNoAutoBrowserValue, ok := m.Get(config.ConfigAuthNoBrowser)
 	authorizeNoAutoBrowser := ok && authorizeNoAutoBrowserValue != ""
 
-	authURL, state, err := getAuthURL(name, m, oauthConfig, opt)
+	authURL, state, pkceVerifier, err := getAuthURL(name, m, oauthConfig, opt)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Prepare webserver
 	server := newAuthServer(opt, bindAddress, state, authURL)
 	err = server.Init()
 	if err != nil {
-		return "", fmt.Errorf("failed to start auth webserver: %w", err)
+		return "", "", fmt.Errorf("failed to start auth webserver: %w", err)
 	}
-	go server.Serve()
-	defer server.Stop()
 	authURL = "http://" + bindAddress + "/auth?state=" + state
+
+	oauthCtx, cancel := context.WithCancel(ctx)
+	oauthCancelMu.Lock()
+	oauthCancelFn = cancel
+	oauthURL = authURL
+	oauthCancelMu.Unlock()
+
+	go server.Serve()
+	defer func() {
+		oauthCancelMu.Lock()
+		oauthCancelFn = nil
+		oauthURL = ""
+		oauthCancelMu.Unlock()
+		cancel()
+		server.Stop()
+	}()
 
 	if !authorizeNoAutoBrowser {
 		// Open the URL for the user to visit
@@ -873,28 +1020,40 @@ func configSetup(ctx context.Context, id, name string, m configmap.Mapper, oauth
 
 	// Read the code via the webserver
 	fs.Logf(nil, "Waiting for code...\n")
-	auth := <-server.result
+	var auth *AuthResult
+	select {
+	case auth = <-server.result:
+	case <-oauthCtx.Done():
+		return "", "", errors.New("oauth authentication was cancelled")
+	}
 	if !auth.OK || auth.Code == "" {
-		return "", auth
+		return "", "", auth
 	}
 	fs.Logf(nil, "Got code\n")
 	if opt.CheckAuth != nil {
 		err = opt.CheckAuth(oauthConfig, auth)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
-	return auth.Code, nil
+	return auth.Code, pkceVerifier, nil
 }
 
 // Exchange the code for a token
-func configExchange(ctx context.Context, name string, m configmap.Mapper, oauthConfig *Config, code string) error {
+func configExchange(ctx context.Context, name string, m configmap.Mapper, oauthConfig *Config, code string, pkceVerifier string) error {
 	ctx = Context(ctx, fshttp.NewClient(ctx))
 
 	// Create the configuration required for the OAuth flow
 	oauth2Conf := oauthConfig.MakeOauth2Config()
 
-	token, err := oauth2Conf.Exchange(ctx, code)
+	var token *oauth2.Token
+	var err error
+	if pkceVerifier != "" {
+		token, err = oauth2Conf.Exchange(ctx, code, oauth2.VerifierOption(pkceVerifier))
+	} else {
+		token, err = oauth2Conf.Exchange(ctx, code)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to get token: %w", err)
 	}
@@ -971,8 +1130,13 @@ func (s *authServer) handleAuth(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// check state
+	//
+	// This is the only thing which ties the callback to the flow
+	// rclone started, so a request without it must be rejected -
+	// any web page open in the browser can make a request to the
+	// local auth server.
 	state := req.Form.Get("state")
-	if state != s.state && !(state == "" && s.opt.StateBlankOK) {
+	if state != s.state {
 		reply(http.StatusBadRequest, &AuthResult{
 			Name:        "Auth state doesn't match",
 			Description: fmt.Sprintf("Expecting %q got %q", s.state, state),

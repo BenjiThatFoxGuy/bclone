@@ -1,0 +1,1341 @@
+// Package internxt provides an interface to Internxt's Drive API
+package internxt
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"path"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/internxt/rclone-adapter/auth"
+	"github.com/internxt/rclone-adapter/buckets"
+	config "github.com/internxt/rclone-adapter/config"
+	sdkerrors "github.com/internxt/rclone-adapter/errors"
+	"github.com/internxt/rclone-adapter/files"
+	"github.com/internxt/rclone-adapter/folders"
+	"github.com/internxt/rclone-adapter/users"
+	"github.com/rclone/rclone/fs"
+	rclone_config "github.com/rclone/rclone/fs/config"
+	"github.com/rclone/rclone/fs/config/configmap"
+	"github.com/rclone/rclone/fs/config/configstruct"
+	"github.com/rclone/rclone/fs/config/obscure"
+	"github.com/rclone/rclone/fs/fserrors"
+	"github.com/rclone/rclone/fs/fshttp"
+	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/lib/dircache"
+	"github.com/rclone/rclone/lib/encoder"
+	"github.com/rclone/rclone/lib/multipart"
+	"github.com/rclone/rclone/lib/oauthutil"
+	"github.com/rclone/rclone/lib/pacer"
+	"github.com/rclone/rclone/lib/random"
+)
+
+const (
+	minSleep            = 10 * time.Millisecond
+	maxSleep            = 2 * time.Second
+	decayConstant       = 2
+	maxUploadParts      = 10000
+	minChunkSize        = fs.SizeSuffix(5 * 1024 * 1024)
+	minUploadCutoff     = fs.SizeSuffix(100 * 1024 * 1024)
+	defaultUploadCutoff = fs.SizeSuffix(100 * 1024 * 1024)
+	maxUploadCutoff     = fs.SizeSuffix(5 * 1024 * 1024 * 1024)
+)
+
+// shouldRetry determines if an error should be retried.
+// On 401, it attempts to re-authorize before retrying.
+// On 429, it honours the server's rate limit retry delay.
+func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
+	if fserrors.ContextError(ctx, &err) {
+		return false, err
+	}
+	if httpErr, ok := errors.AsType[*sdkerrors.HTTPError](err); ok {
+		switch httpErr.StatusCode() {
+		case 401:
+			if !f.authFailed {
+				authErr := f.reAuthorize(ctx)
+				if authErr != nil {
+					fs.Debugf(f, "Re-authorization failed: %v", authErr)
+					return false, err
+				}
+				return true, err
+			}
+			return false, err
+		case 429:
+			delay := httpErr.RetryAfter()
+			if delay <= 0 {
+				delay = time.Second
+			}
+			return true, pacer.RetryAfterError(err, delay)
+		}
+	}
+	return fserrors.ShouldRetry(err), err
+}
+
+// Register with Fs
+func init() {
+	fs.Register(&fs.RegInfo{
+		Name:        "internxt",
+		Description: "Internxt Drive",
+		NewFs:       NewFs,
+		Config:      Config,
+		Options: []fs.Option{{
+			Name:      "email",
+			Help:      "Email of your Internxt account.",
+			Required:  true,
+			Sensitive: true,
+		}, {
+			Name:       "pass",
+			Help:       "Password.",
+			Required:   true,
+			IsPassword: true,
+		}, {
+			Name:      "mnemonic",
+			Help:      "Mnemonic (internal use only)",
+			Required:  false,
+			Advanced:  true,
+			Sensitive: true,
+			Hide:      fs.OptionHideBoth,
+		}, {
+			Name:     "skip_hash_validation",
+			Default:  true,
+			Advanced: true,
+			Help:     "Skip hash validation when downloading files.\n\nBy default, hash validation is disabled. Set this to false to enable validation.",
+		}, {
+			Name:     "upload_concurrency",
+			Help:     "Concurrency for multipart uploads.\n\nThis is the number of chunks of the same file that are uploaded concurrently.\n\nNote that each chunk is buffered in memory.",
+			Default:  4,
+			Advanced: true,
+		}, {
+			Name:     "upload_cutoff",
+			Help:     "Cutoff for switching to multipart upload.\n\nAny files larger than this will be uploaded in chunks of chunk_size.\nThe minimum is 100 MiB and the maximum is 5 GiB.",
+			Default:  defaultUploadCutoff,
+			Advanced: true,
+		}, {
+			Name:     "chunk_size",
+			Help:     "Chunk size for multipart uploads.\n\nFiles larger than upload_cutoff will be uploaded in chunks of this size.\n\nMemory usage is approximately chunk_size * upload_concurrency.",
+			Default:  fs.SizeSuffix(30 * 1024 * 1024),
+			Advanced: true,
+		}, {
+			Name:     rclone_config.ConfigEncoding,
+			Help:     rclone_config.ConfigEncodingHelp,
+			Advanced: true,
+			Default: encoder.EncodeInvalidUtf8 |
+				encoder.EncodeSlash |
+				encoder.EncodeBackSlash |
+				encoder.EncodeRightPeriod |
+				encoder.EncodeDot |
+				encoder.EncodeCrLf,
+		}},
+	})
+}
+
+// Config configures the Internxt remote by performing login
+func Config(ctx context.Context, name string, m configmap.Mapper, configIn fs.ConfigIn) (*fs.ConfigOut, error) {
+	email, _ := m.Get("email")
+	if email == "" {
+		return nil, errors.New("email is required")
+	}
+
+	pass, _ := m.Get("pass")
+	if pass != "" {
+		var err error
+		pass, err = obscure.Reveal(pass)
+		if err != nil {
+			return nil, fmt.Errorf("couldn't decrypt password: %w", err)
+		}
+	}
+
+	cfg := config.NewDefaultToken("")
+	cfg.HTTPClient = fshttp.NewClient(ctx)
+
+	switch configIn.State {
+	case "":
+		// Check if 2FA is required
+		loginResp, err := auth.Login(ctx, cfg, email)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check login requirements: %w", err)
+		}
+
+		if loginResp.TFA {
+			return fs.ConfigInput("2fa", "config_2fa", "Two-factor authentication code")
+		}
+
+		// No 2FA required, do login directly
+		return fs.ConfigGoto("login")
+
+	case "2fa":
+		twoFA := configIn.Result
+		if twoFA == "" {
+			return fs.ConfigError("", "2FA code is required")
+		}
+		m.Set("2fa_code", twoFA)
+		return fs.ConfigGoto("login")
+
+	case "login":
+		twoFA, _ := m.Get("2fa_code")
+
+		loginResp, err := auth.DoLogin(ctx, cfg, email, pass, twoFA)
+		if err != nil {
+			return nil, fmt.Errorf("login failed: %w", err)
+		}
+
+		// Store mnemonic (obscured)
+		m.Set("mnemonic", obscure.MustObscure(loginResp.User.Mnemonic))
+
+		// Store token
+		oauthToken, err := jwtToOAuth2Token(loginResp.NewToken)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse token: %w", err)
+		}
+		err = oauthutil.PutToken(name, m, oauthToken, true)
+		if err != nil {
+			return nil, fmt.Errorf("failed to save token: %w", err)
+		}
+
+		// Clear temporary 2FA code
+		m.Set("2fa_code", "")
+
+		return nil, nil
+	}
+
+	return nil, fmt.Errorf("unknown state %q", configIn.State)
+}
+
+// Options defines the configuration for this backend
+type Options struct {
+	Email              string               `config:"email"`
+	Pass               string               `config:"pass"`
+	TwoFA              string               `config:"2fa"`
+	Mnemonic           string               `config:"mnemonic"`
+	SkipHashValidation bool                 `config:"skip_hash_validation"`
+	UploadCutoff       fs.SizeSuffix        `config:"upload_cutoff"`
+	ChunkSize          fs.SizeSuffix        `config:"chunk_size"`
+	UploadConcurrency  int                  `config:"upload_concurrency"`
+	Encoding           encoder.MultiEncoder `config:"encoding"`
+}
+
+// Fs represents an Internxt remote
+type Fs struct {
+	name         string
+	root         string
+	opt          Options
+	m            configmap.Mapper
+	dirCache     *dircache.DirCache
+	cfg          *config.Config
+	features     *fs.Features
+	pacer        *fs.Pacer
+	tokenRenewer *oauthutil.Renew
+	bridgeUser   string
+	userID       string
+	authMu       sync.Mutex
+	authFailed   bool
+}
+
+// Object holds the data for a remote file object
+type Object struct {
+	f       *Fs
+	remote  string
+	id      string
+	uuid    string
+	size    int64
+	modTime time.Time
+}
+
+// Name of the remote (as passed into NewFs)
+func (f *Fs) Name() string { return f.name }
+
+// Root of the remote (as passed into NewFs)
+func (f *Fs) Root() string { return f.root }
+
+// String converts this Fs to a string
+func (f *Fs) String() string { return fmt.Sprintf("Internxt root '%s'", f.root) }
+
+// Features returns the optional features of this Fs
+func (f *Fs) Features() *fs.Features {
+	return f.features
+}
+
+// DirCacheFlush resets the directory cache
+func (f *Fs) DirCacheFlush() {
+	f.dirCache.ResetRoot()
+}
+
+// Hashes returns type of hashes supported by Internxt
+func (f *Fs) Hashes() hash.Set {
+	return hash.NewHashSet()
+}
+
+// Precision return the precision of this Fs
+func (f *Fs) Precision() time.Duration {
+	return fs.ModTimeNotSupported
+}
+
+// NewFs constructs an Fs from the path
+func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
+	opt := new(Options)
+	if err := configstruct.Set(m, opt); err != nil {
+		return nil, err
+	}
+
+	if err := checkUploadChunkSize(opt.ChunkSize); err != nil {
+		return nil, fmt.Errorf("internxt: chunk size: %w", err)
+	}
+	if err := checkUploadCutoff(opt.UploadCutoff); err != nil {
+		return nil, fmt.Errorf("internxt: upload cutoff: %w", err)
+	}
+
+	if opt.Mnemonic == "" {
+		return nil, errors.New("mnemonic is required - please run: rclone config reconnect " + name + ":")
+	}
+
+	var err error
+	opt.Mnemonic, err = obscure.Reveal(opt.Mnemonic)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't decrypt mnemonic: %w", err)
+	}
+
+	oauthToken, err := oauthutil.GetToken(name, m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token - please run: rclone config reconnect %s: - %w", name, err)
+	}
+
+	oauthConfig := &oauthutil.Config{
+		TokenURL: "https://gateway.internxt.com/drive/users/refresh",
+	}
+
+	_, ts, err := oauthutil.NewClient(ctx, name, m, oauthConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create oauth client: %w", err)
+	}
+
+	cfg := config.NewDefaultToken(oauthToken.AccessToken)
+	cfg.Mnemonic = opt.Mnemonic
+	cfg.SkipHashValidation = opt.SkipHashValidation
+	cfg.HTTPClient = fshttp.NewClient(ctx)
+
+	f := &Fs{
+		name: name,
+		root: strings.Trim(root, "/"),
+		opt:  *opt,
+		m:    m,
+		cfg:  cfg,
+	}
+
+	f.pacer = fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(minSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant)))
+
+	var userInfo *userInfo
+	const maxRetries = 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		userInfo, err = getUserInfo(ctx, &userInfoConfig{Token: f.cfg.Token})
+		if err == nil {
+			break
+		}
+
+		var httpErr *sdkerrors.HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode() == 401 {
+			fs.Debugf(f, "getUserInfo returned 401, attempting re-auth")
+			authErr := f.refreshOrReLogin(ctx)
+			if authErr != nil {
+				return nil, fmt.Errorf("failed to fetch user info (re-auth failed: %w): %w", authErr, err)
+			}
+			userInfo, err = getUserInfo(ctx, &userInfoConfig{Token: f.cfg.Token})
+			if err == nil {
+				break
+			}
+			return nil, fmt.Errorf("failed to fetch user info after re-auth: %w", err)
+		}
+
+		if fserrors.ShouldRetry(err) && attempt < maxRetries {
+			fs.Debugf(f, "getUserInfo transient error (attempt %d/%d): %v", attempt, maxRetries, err)
+			time.Sleep(time.Duration(attempt) * time.Second)
+			continue
+		}
+
+		return nil, fmt.Errorf("failed to fetch user info: %w", err)
+	}
+
+	f.cfg.RootFolderID = userInfo.RootFolderID
+	f.cfg.Bucket = userInfo.Bucket
+	f.cfg.BasicAuthHeader = computeBasicAuthHeader(userInfo.BridgeUser, userInfo.UserID)
+	f.bridgeUser = userInfo.BridgeUser
+	f.userID = userInfo.UserID
+
+	// The refresh endpoint rotates the token on every successful call.
+	// Persist the rotated token so routine use keeps the stored token
+	// current; otherwise it keeps its original expiry and accounts that
+	// cannot re-login non-interactively (2FA) eventually strand.
+	if userInfo.NewToken != "" {
+		if rotated, rotErr := jwtToOAuth2Token(userInfo.NewToken); rotErr != nil {
+			fs.Debugf(f, "Not adopting rotated token from user info: %v", rotErr)
+		} else {
+			// Use the rotated token for this session even if saving it
+			// fails; persistence is best-effort.
+			f.cfg.Token = userInfo.NewToken
+			if putErr := oauthutil.PutToken(name, m, rotated, false); putErr != nil {
+				fs.Debugf(f, "Failed to save rotated token from user info: %v", putErr)
+			} else {
+				fs.Debugf(f, "Persisted rotated token from user info, expiry: %v", rotated.Expiry)
+			}
+		}
+	}
+
+	f.features = (&fs.Features{
+		CanHaveEmptyDirectories: true,
+	}).Fill(ctx, f)
+
+	if ts != nil {
+		f.tokenRenewer = oauthutil.NewRenew(f.String(), ts, func() error {
+			f.authMu.Lock()
+			defer f.authMu.Unlock()
+			return f.refreshOrReLogin(ctx)
+		})
+		f.tokenRenewer.Start()
+	}
+
+	f.dirCache = dircache.New(f.root, cfg.RootFolderID, f)
+
+	err = f.dirCache.FindRoot(ctx, false)
+	if err != nil {
+		// Assume it might be a file
+		newRoot, remote := dircache.SplitPath(f.root)
+		tempF := &Fs{
+			name:         f.name,
+			root:         newRoot,
+			opt:          f.opt,
+			m:            f.m,
+			cfg:          f.cfg,
+			features:     f.features,
+			pacer:        f.pacer,
+			tokenRenewer: f.tokenRenewer,
+			bridgeUser:   f.bridgeUser,
+			userID:       f.userID,
+		}
+		tempF.dirCache = dircache.New(newRoot, f.cfg.RootFolderID, tempF)
+
+		err = tempF.dirCache.FindRoot(ctx, false)
+		if err != nil {
+			return f, nil
+		}
+
+		_, err := tempF.NewObject(ctx, remote)
+		if err != nil {
+			if err == fs.ErrorObjectNotFound {
+				return f, nil
+			}
+			return nil, err
+		}
+
+		f.dirCache = tempF.dirCache
+		f.root = tempF.root
+		return f, fs.ErrorIsFile
+	}
+
+	return f, nil
+}
+
+// Mkdir creates a new directory
+func (f *Fs) Mkdir(ctx context.Context, dir string) error {
+	id, err := f.dirCache.FindDir(ctx, dir, true)
+	if err != nil {
+		return err
+	}
+
+	f.dirCache.Put(dir, id)
+
+	return nil
+}
+
+// Rmdir removes a directory
+// Returns an error if it isn't empty
+func (f *Fs) Rmdir(ctx context.Context, dir string) error {
+	root := path.Join(f.root, dir)
+	if root == "" {
+		return errors.New("cannot remove root directory")
+	}
+
+	id, err := f.dirCache.FindDir(ctx, dir, false)
+	if err != nil {
+		return fs.ErrorDirNotFound
+	}
+
+	// Check if directory is empty
+	var childFolders []folders.Folder
+	err = f.pacer.Call(func() (bool, error) {
+		var err error
+		childFolders, err = folders.ListAllFolders(ctx, f.cfg, id)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return err
+	}
+	for _, e := range childFolders {
+		if !recent.stale(e.UUID, id, e.PlainName) {
+			return fs.ErrorDirectoryNotEmpty
+		}
+	}
+
+	var childFiles []folders.File
+	err = f.pacer.Call(func() (bool, error) {
+		var err error
+		childFiles, err = folders.ListAllFiles(ctx, f.cfg, id)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return err
+	}
+	for _, e := range childFiles {
+		if !recent.stale(e.UUID, id, joinNameExt(e.PlainName, e.Type)) {
+			return fs.ErrorDirectoryNotEmpty
+		}
+	}
+
+	// Delete the directory
+	err = f.pacer.Call(func() (bool, error) {
+		err := folders.DeleteFolder(ctx, f.cfg, id)
+		if err != nil && strings.Contains(err.Error(), "404") {
+			return false, fs.ErrorDirNotFound
+		}
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return err
+	}
+	recent.deleted(id)
+
+	f.dirCache.FlushDir(dir)
+	return nil
+}
+
+// FindLeaf looks for a sub‑folder named `leaf` under the Internxt folder `pathID`.
+// If found, it returns its UUID and true. If not found, returns "", false.
+func (f *Fs) FindLeaf(ctx context.Context, pathID, leaf string) (string, bool, error) {
+	var entries []folders.Folder
+	err := f.pacer.Call(func() (bool, error) {
+		var err error
+		entries, err = folders.ListAllFolders(ctx, f.cfg, pathID)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return "", false, err
+	}
+	for _, e := range entries {
+		if recent.stale(e.UUID, pathID, e.PlainName) {
+			continue
+		}
+		if f.opt.Encoding.ToStandardName(e.PlainName) == leaf {
+			return e.UUID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// CreateDir creates a new directory
+func (f *Fs) CreateDir(ctx context.Context, pathID, leaf string) (string, error) {
+	request := folders.CreateFolderRequest{
+		PlainName:        f.opt.Encoding.FromStandardName(leaf),
+		ParentFolderUUID: pathID,
+		ModificationTime: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	var resp *folders.Folder
+	err := f.pacer.CallNoRetry(func() (bool, error) {
+		var err error
+		resp, err = folders.CreateFolder(ctx, f.cfg, request)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		// If folder already exists (409 conflict), try to find it
+		if strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "Conflict") {
+			existingID, found, findErr := f.FindLeaf(ctx, pathID, leaf)
+			if findErr == nil && found {
+				fs.Debugf(f, "Folder %q already exists in %q, using existing UUID: %s", leaf, pathID, existingID)
+				return existingID, nil
+			}
+		}
+		return "", fmt.Errorf("can't create folder, %w", err)
+	}
+
+	return resp.UUID, nil
+}
+
+// splitNameExt splits a basename into the (plainName, type) pair that Internxt
+// stores a file under.
+func splitNameExt(baseName string) (name, ext string) {
+	ext = path.Ext(baseName)
+	if ext == baseName {
+		return baseName, ""
+	}
+	return strings.TrimSuffix(baseName, ext), strings.TrimPrefix(ext, ".")
+}
+
+// joinNameExt reassembles the basename a stored (plainName, type) pair
+// displays as, the way List builds its entries.
+func joinNameExt(name, ext string) string {
+	if ext == "" {
+		return name
+	}
+	return name + "." + ext
+}
+
+// legacyNameExt splits a basename at the final dot, the way this backend used
+// to before it adopted the convention the other clients share. It differs from
+// splitNameExt only for a name whose sole dot leads it: ".bashrc" splits into
+// an empty name of type "bashrc".
+func legacyNameExt(baseName string) (name, ext string) {
+	return strings.TrimSuffix(baseName, path.Ext(baseName)), strings.TrimPrefix(path.Ext(baseName), ".")
+}
+
+// existenceCheck builds a lookup criterion for one (plainName, type) spelling.
+func existenceCheck(name, ext string) files.FileExistenceCheck {
+	return files.FileExistenceCheck{
+		PlainName:    name,
+		Type:         ext,
+		OriginalFile: struct{}{},
+	}
+}
+
+// staleWindow is how long the API may carry on returning an item from
+// where it was before this process moved or deleted it.
+const staleWindow = time.Minute
+
+// location is where this process last put an item. An empty parentUUID
+// means the item was deleted.
+type location struct {
+	parentUUID string
+	name       string // encoded name, including any extension
+	expires    time.Time
+}
+
+// recentChanges holds the files and folders this process has moved or
+// deleted recently, keyed by UUID.
+//
+// The API serves lookups and listings from read replicas which lag behind
+// writes, so an item can be returned from its old location for a while after
+// it was moved or deleted. Acting on such a stale entry can be destructive,
+// eg overwriting it would delete the file from where it was moved to.
+type recentChanges struct {
+	mu        sync.Mutex
+	items     map[string]location
+	lastPrune time.Time
+}
+
+// recent is shared by all the Fs in the process as UUIDs are global.
+var recent = recentChanges{items: map[string]location{}}
+
+// set records the new location of uuid, pruning expired entries.
+func (r *recentChanges) set(uuid string, loc location) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	if now.Sub(r.lastPrune) > staleWindow {
+		for k, v := range r.items {
+			if now.After(v.expires) {
+				delete(r.items, k)
+			}
+		}
+		r.lastPrune = now
+	}
+	loc.expires = now.Add(staleWindow)
+	r.items[uuid] = loc
+}
+
+// moved records that uuid was moved to name in parentUUID.
+func (r *recentChanges) moved(uuid, parentUUID, name string) {
+	r.set(uuid, location{parentUUID: parentUUID, name: name})
+}
+
+// deleted records that uuid was deleted.
+func (r *recentChanges) deleted(uuid string) {
+	r.set(uuid, location{})
+}
+
+// stale reports whether an API result saying uuid is called name in
+// parentUUID is out of date because of a change made by this process.
+func (r *recentChanges) stale(uuid, parentUUID, name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	loc, ok := r.items[uuid]
+	if !ok || time.Now().After(loc.expires) {
+		return false
+	}
+	return loc.parentUUID != parentUUID || loc.name != name
+}
+
+// findFile looks up a single file by name within directoryID. Returns
+// (nil, nil) when the file does not exist; surfaces transport/API errors.
+func (f *Fs) findFile(ctx context.Context, leaf, directoryID string) (*folders.File, error) {
+	encodedName := f.opt.Encoding.FromStandardName(leaf)
+	name, ext := splitNameExt(encodedName)
+	checks := []files.FileExistenceCheck{existenceCheck(name, ext)}
+	if encodedName != name {
+		checks = append(checks, existenceCheck(encodedName, ""))
+	}
+	if legacyName, legacyExt := legacyNameExt(encodedName); legacyExt != "" && legacyName != name {
+		checks = append(checks, existenceCheck(legacyName, legacyExt))
+	}
+
+	var checkResult *files.CheckFilesExistenceResponse
+	err := f.pacer.Call(func() (bool, error) {
+		var err error
+		checkResult, err = files.CheckFilesExistence(ctx, f.cfg, directoryID, checks)
+		if isNotFoundError(err) {
+			return true, err
+		}
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var uuid string
+	for _, result := range checkResult.Files {
+		if !result.FileExists() || result.UUID == "" {
+			continue
+		}
+		if recent.stale(result.UUID, directoryID, joinNameExt(result.PlainName, result.Type)) {
+			fs.Debugf(f, "Ignoring stale lookup of %q (UUID: %s) which was moved or deleted", leaf, result.UUID)
+			continue
+		}
+		if joinNameExt(result.PlainName, result.Type) == encodedName {
+			uuid = result.UUID
+			break
+		}
+	}
+	if uuid == "" {
+		return nil, nil
+	}
+
+	var fileMeta *files.FileMeta
+	err = f.pacer.Call(func() (bool, error) {
+		var err error
+		fileMeta, err = files.GetFileMeta(ctx, f.cfg, uuid)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if fileMeta == nil {
+		return nil, nil
+	}
+	return convertFileMetaToFile(fileMeta), nil
+}
+
+// convertFileMetaToFile converts files.FileMeta to folders.File
+func convertFileMetaToFile(meta *files.FileMeta) *folders.File {
+	// FileMeta and folders.File have compatible structures
+	return &folders.File{
+		ID:               meta.ID,
+		UUID:             meta.UUID,
+		FileID:           meta.FileID,
+		PlainName:        meta.PlainName,
+		Type:             meta.Type,
+		Size:             meta.Size,
+		Bucket:           meta.Bucket,
+		FolderUUID:       meta.FolderUUID,
+		EncryptVersion:   meta.EncryptVersion,
+		ModificationTime: meta.ModificationTime,
+	}
+}
+
+// List lists a directory
+func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
+	dirID, err := f.dirCache.FindDir(ctx, dir, false)
+	if err != nil {
+		return nil, err
+	}
+	var out fs.DirEntries
+
+	var foldersList []folders.Folder
+	err = f.pacer.Call(func() (bool, error) {
+		var err error
+		foldersList, err = folders.ListAllFolders(ctx, f.cfg, dirID)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range foldersList {
+		if recent.stale(e.UUID, dirID, e.PlainName) {
+			continue
+		}
+		remote := path.Join(dir, f.opt.Encoding.ToStandardName(e.PlainName))
+		out = append(out, fs.NewDir(remote, e.ModificationTime))
+	}
+	var filesList []folders.File
+	err = f.pacer.Call(func() (bool, error) {
+		var err error
+		filesList, err = folders.ListAllFiles(ctx, f.cfg, dirID)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range filesList {
+		remote := e.PlainName
+		if len(e.Type) > 0 {
+			remote += "." + e.Type
+		}
+		if recent.stale(e.UUID, dirID, remote) {
+			continue
+		}
+		remote = path.Join(dir, f.opt.Encoding.ToStandardName(remote))
+		out = append(out, newObjectWithFile(f, remote, &e))
+	}
+	return out, nil
+}
+
+// Put uploads a file
+func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	remote := src.Remote()
+
+	leaf, directoryID, err := f.dirCache.FindPath(ctx, remote, false)
+	if err != nil {
+		if err == fs.ErrorDirNotFound {
+			o := &Object{
+				f:       f,
+				remote:  remote,
+				size:    src.Size(),
+				modTime: src.ModTime(ctx),
+			}
+			return o, o.Update(ctx, in, src, options...)
+		}
+		return nil, err
+	}
+
+	existingFile, err := f.findFile(ctx, leaf, directoryID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create object - if file exists, populate it with existing metadata
+	o := &Object{
+		f:       f,
+		remote:  remote,
+		size:    src.Size(),
+		modTime: src.ModTime(ctx),
+	}
+
+	if existingFile != nil {
+		// File exists - populate object with existing metadata
+		size, _ := existingFile.Size.Int64()
+		o.id = existingFile.FileID
+		o.uuid = existingFile.UUID
+		o.size = size
+		o.modTime = existingFile.ModificationTime
+	}
+
+	return o, o.Update(ctx, in, src, options...)
+}
+
+// Remove removes an object
+func (f *Fs) Remove(ctx context.Context, remote string) error {
+	obj, err := f.NewObject(ctx, remote)
+	if err == nil {
+		if err := obj.Remove(ctx); err != nil {
+			return err
+		}
+		parent := path.Dir(remote)
+		f.dirCache.FlushDir(parent)
+		return nil
+	}
+
+	dirID, err := f.dirCache.FindDir(ctx, remote, false)
+	if err != nil {
+		return err
+	}
+	err = f.pacer.Call(func() (bool, error) {
+		err := folders.DeleteFolder(ctx, f.cfg, dirID)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return err
+	}
+	recent.deleted(dirID)
+	f.dirCache.FlushDir(remote)
+	return nil
+}
+
+// NewObject creates a new object by looking up a single file's metadata.
+func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
+	leaf, directoryID, err := f.dirCache.FindPath(ctx, remote, false)
+	if err != nil {
+		if err == fs.ErrorDirNotFound {
+			return nil, fs.ErrorObjectNotFound
+		}
+		return nil, err
+	}
+	file, err := f.findFile(ctx, leaf, directoryID)
+	if err != nil {
+		return nil, err
+	}
+	if file == nil {
+		return nil, fs.ErrorObjectNotFound
+	}
+	return newObjectWithFile(f, remote, file), nil
+}
+
+// newObjectWithFile returns a new object by file info
+func newObjectWithFile(f *Fs, remote string, file *folders.File) fs.Object {
+	size, _ := file.Size.Int64()
+	return &Object{
+		f:       f,
+		remote:  remote,
+		id:      file.FileID,
+		uuid:    file.UUID,
+		size:    size,
+		modTime: file.ModificationTime,
+	}
+}
+
+// Fs returns the parent Fs
+func (o *Object) Fs() fs.Info {
+	return o.f
+}
+
+// String returns the remote path
+func (o *Object) String() string {
+	return o.remote
+}
+
+// Remote returns the remote path
+func (o *Object) Remote() string {
+	return o.remote
+}
+
+// Size is the file length
+func (o *Object) Size() int64 {
+	return o.size
+}
+
+// ModTime is the last modified time (read-only)
+func (o *Object) ModTime(ctx context.Context) time.Time {
+	return o.modTime
+}
+
+// Hash returns the hash value (not implemented)
+func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) {
+	return "", hash.ErrUnsupported
+}
+
+// Storable returns if this object is storable
+func (o *Object) Storable() bool {
+	return true
+}
+
+// SetModTime sets the modified time
+func (o *Object) SetModTime(ctx context.Context, t time.Time) error {
+	return fs.ErrorCantSetModTime
+}
+
+// About gets quota information
+func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
+	var internxtLimit *users.LimitResponse
+	err := f.pacer.Call(func() (bool, error) {
+		var err error
+		internxtLimit, err = users.GetLimit(ctx, f.cfg)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var internxtUsage *users.UsageResponse
+	err = f.pacer.Call(func() (bool, error) {
+		var err error
+		internxtUsage, err = users.GetUsage(ctx, f.cfg)
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	usage := &fs.Usage{
+		Used: fs.NewUsageValue(internxtUsage.Drive),
+	}
+
+	usage.Total = fs.NewUsageValue(internxtLimit.MaxSpaceBytes)
+	usage.Free = fs.NewUsageValue(*usage.Total - *usage.Used)
+
+	return usage, nil
+}
+
+// Move moves a file to a new location
+func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	srcObj, ok := src.(*Object)
+	if !ok {
+		return nil, fs.ErrorCantMove
+	}
+
+	if srcObj.uuid == "" {
+		return nil, fs.ErrorCantMove
+	}
+
+	leaf, directoryID, err := f.dirCache.FindPath(ctx, remote, true)
+	if err != nil {
+		return nil, err
+	}
+
+	newName, newType := splitNameExt(f.opt.Encoding.FromStandardName(leaf))
+
+	// Move the file server-side
+	err = f.pacer.Call(func() (bool, error) {
+		err := files.MoveFile(ctx, f.cfg, srcObj.uuid, directoryID, newName, newType)
+		// The move is checked against lagging read replicas so it can
+		// fail with 404 if the destination directory was just created
+		// or 409 if a file at the destination was just deleted.
+		if err != nil && isStaleReadError(err, true) {
+			return true, err
+		}
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+	recent.moved(srcObj.uuid, directoryID, joinNameExt(newName, newType))
+
+	dstObj := &Object{
+		f:       f,
+		remote:  remote,
+		id:      srcObj.id,
+		uuid:    srcObj.uuid,
+		size:    srcObj.size,
+		modTime: srcObj.modTime,
+	}
+
+	return dstObj, nil
+}
+
+// DirMove moves src, srcRemote to this remote at dstRemote
+// using server-side move operations.
+//
+// Will only be called if src.Fs().Name() == f.Name()
+//
+// If it isn't possible then return fs.ErrorCantDirMove
+//
+// If destination exists then return fs.ErrorDirExists
+func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
+	srcFs, ok := src.(*Fs)
+	if !ok {
+		return fs.ErrorCantDirMove
+	}
+
+	srcID, _, _, dstDirectoryID, dstLeaf, err := f.dirCache.DirMove(ctx, srcFs.dirCache, srcFs.root, srcRemote, f.root, dstRemote)
+	if err != nil {
+		return err
+	}
+
+	encodedLeaf := f.opt.Encoding.FromStandardName(dstLeaf)
+	err = f.pacer.Call(func() (bool, error) {
+		err := folders.MoveFolder(ctx, f.cfg, srcID, dstDirectoryID, encodedLeaf)
+		// Moving a large folder can outlast the gateway timeout (520/502)
+		// yet still complete, in which case the retry reports this.
+		if err != nil && isConflictError(err) && strings.Contains(err.Error(), "already moved to that location") {
+			return false, nil
+		}
+		return f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return err
+	}
+	recent.moved(srcID, dstDirectoryID, encodedLeaf)
+
+	srcFs.dirCache.FlushDir(srcRemote)
+	return nil
+}
+
+// Shutdown the backend, closing any background tasks and any cached
+// connections.
+func (f *Fs) Shutdown(ctx context.Context) error {
+	buckets.WaitForPendingThumbnails()
+
+	if f.tokenRenewer != nil {
+		f.tokenRenewer.Shutdown()
+	}
+	return nil
+}
+
+// Open opens a file for streaming
+func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
+	fs.FixRangeOption(options, o.size)
+	rangeValue := ""
+	for _, option := range options {
+		switch option.(type) {
+		case *fs.RangeOption, *fs.SeekOption:
+			_, rangeValue = option.Header()
+		}
+	}
+
+	if o.size == 0 {
+		return io.NopCloser(bytes.NewReader(nil)), nil
+	}
+
+	var stream io.ReadCloser
+	err := o.f.pacer.Call(func() (bool, error) {
+		var err error
+		stream, err = buckets.DownloadFileStream(ctx, o.f.cfg, o.id, rangeValue)
+		return o.f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return stream, nil
+}
+
+// Update updates an existing file or creates a new one
+func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
+	remote := o.remote
+
+	origName, origType := splitNameExt(path.Base(remote))
+
+	// Create directory if it doesn't exist
+	_, dirID, err := o.f.dirCache.FindPath(ctx, remote, true)
+	if err != nil {
+		return err
+	}
+
+	// rename based rollback pattern
+	// old file is preserved until new upload succeeds
+
+	var backupUUID string
+	var backupName, backupType string
+	oldUUID := o.uuid
+
+	// Step 1: If file exists, rename to backup (preserves old file during upload)
+	if oldUUID != "" {
+		name, ext := splitNameExt(path.Base(remote))
+		backupSuffix := fmt.Sprintf(".rclone-backup-%s", random.String(8))
+		backupName = o.f.opt.Encoding.FromStandardName(name + backupSuffix)
+		backupType = ext
+
+		// Rename existing file to backup name
+		err = o.f.pacer.Call(func() (bool, error) {
+			err := files.RenameFile(ctx, o.f.cfg, oldUUID, backupName, backupType)
+			if err != nil {
+				// Handle 409 Conflict: Treat as success.
+				var httpErr *sdkerrors.HTTPError
+				if errors.As(err, &httpErr) && httpErr.StatusCode() == 409 {
+					return false, nil
+				}
+			}
+			return o.f.shouldRetry(ctx, err)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to rename existing file to backup: %w", err)
+		}
+		backupUUID = oldUUID
+
+		fs.Debugf(o.f, "Renamed existing file %s to backup %s.%s (UUID: %s)", remote, backupName, backupType, backupUUID)
+	}
+
+	size := src.Size()
+
+	var meta *buckets.CreateMetaResponse
+	if size < 0 || size >= int64(o.f.opt.UploadCutoff) {
+		chunkWriter, uploadErr := multipart.UploadMultipart(ctx, src, in, multipart.UploadMultipartOptions{
+			Open:        o.f,
+			OpenOptions: options,
+		})
+
+		if uploadErr != nil {
+			if isEmptyFileLimitError(uploadErr) {
+				o.restoreBackupFile(ctx, backupUUID, origName, origType)
+				return fs.ErrorCantUploadEmptyFiles
+			}
+			if tooLarge := fileTooLargeError(uploadErr); tooLarge != nil {
+				o.restoreBackupFile(ctx, backupUUID, origName, origType)
+				return o.f.tooLargeError(remote, tooLarge)
+			}
+			o.restoreBackupFile(ctx, backupUUID, origName, origType)
+			return uploadErr
+		}
+		w := chunkWriter.(*internxtChunkWriter)
+		meta = w.meta
+	} else {
+		// Use single-part upload for small files
+		err = o.f.pacer.CallNoRetry(func() (bool, error) {
+			var err error
+			meta, err = buckets.UploadFileStreamAuto(ctx,
+				o.f.cfg,
+				dirID,
+				o.f.opt.Encoding.FromStandardName(path.Base(remote)),
+				in,
+				size,
+				src.ModTime(ctx),
+			)
+			return o.f.shouldRetry(ctx, err)
+		})
+
+		if err != nil && isEmptyFileLimitError(err) {
+			o.restoreBackupFile(ctx, backupUUID, origName, origType)
+			return fs.ErrorCantUploadEmptyFiles
+		}
+
+		if tooLarge := fileTooLargeError(err); tooLarge != nil {
+			o.restoreBackupFile(ctx, backupUUID, origName, origType)
+			return o.f.tooLargeError(remote, tooLarge)
+		}
+
+		if err != nil && isStaleReadError(err, backupUUID != "") {
+			o.restoreBackupFile(ctx, backupUUID, origName, origType)
+			return fserrors.RetryError(err)
+		}
+
+		if err != nil {
+			meta, err = o.recoverFromTimeoutConflict(ctx, err, remote, dirID)
+		}
+
+		if err != nil {
+			o.restoreBackupFile(ctx, backupUUID, origName, origType)
+			return err
+		}
+	}
+
+	// Update object metadata
+	o.uuid = meta.UUID
+	o.id = meta.FileID
+	o.size = src.Size()
+	o.remote = remote
+
+	// Step 3: Upload succeeded - delete the backup file
+	if backupUUID != "" {
+		fs.Debugf(o.f, "Upload succeeded, deleting backup file %s.%s (UUID: %s)", backupName, backupType, backupUUID)
+		err := o.f.pacer.Call(func() (bool, error) {
+			err := files.DeleteFile(ctx, o.f.cfg, backupUUID)
+			if err != nil {
+				if httpErr, ok := errors.AsType[*sdkerrors.HTTPError](err); ok {
+					// Treat 404 (Not Found) and 204 (No Content) as success
+					switch httpErr.StatusCode() {
+					case 404, 204:
+						return false, nil
+					}
+				}
+			}
+			return o.f.shouldRetry(ctx, err)
+		})
+		if err != nil {
+			fs.Errorf(o.f, "Failed to delete backup file %s.%s (UUID: %s): %v. This may leave an orphaned backup file.",
+				backupName, backupType, backupUUID, err)
+			// Don't fail the upload just because backup deletion failed
+		} else {
+			recent.deleted(backupUUID)
+			fs.Debugf(o.f, "Successfully deleted backup file")
+		}
+	}
+
+	return nil
+}
+
+// isTimeoutError checks if an error is a timeout using proper error type checking
+func isTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
+}
+
+// isNotFoundError reports whether err is a 404 from the API.
+func isNotFoundError(err error) bool {
+	var httpErr *sdkerrors.HTTPError
+	return errors.As(err, &httpErr) && httpErr.StatusCode() == 404
+}
+
+// isStaleReadError reports whether err is the API contradicting a write this
+// backend has already made, which it does because lookups are served by read
+// replicas that lag behind the primary.
+func isStaleReadError(err error, renamed bool) bool {
+	return isNotFoundError(err) || (renamed && isConflictError(err))
+}
+
+// isConflictError checks if an error indicates a file conflict (409)
+func isConflictError(err error) bool {
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "409") ||
+		strings.Contains(errMsg, "Conflict") ||
+		strings.Contains(errMsg, "already exists")
+}
+
+func isEmptyFileLimitError(err error) bool {
+	errMsg := strings.ToLower(err.Error())
+	return strings.Contains(errMsg, "can not have more empty files") ||
+		strings.Contains(errMsg, "cannot have more empty files") ||
+		strings.Contains(errMsg, "you can not have empty files")
+}
+
+// fileTooLargeError extracts the SDK's FileTooLargeError from a wrapped error
+// chain, returning it (or nil) so callers can branch on the size limit.
+func fileTooLargeError(err error) *sdkerrors.FileTooLargeError {
+	if tooLarge, ok := errors.AsType[*sdkerrors.FileTooLargeError](err); ok {
+		return tooLarge
+	}
+	return nil
+}
+
+// tooLargeError formats a per-file, non-retryable error for the sync engine.
+// fserrors.NoRetryError signals "skip this file but continue the sync."
+func (f *Fs) tooLargeError(remote string, tooLarge *sdkerrors.FileTooLargeError) error {
+	return fserrors.NoRetryError(fmt.Errorf("%s: file size %s exceeds account upload limit of %s",
+		remote,
+		fs.SizeSuffix(tooLarge.Size),
+		fs.SizeSuffix(tooLarge.MaxSize)))
+}
+
+// recoverFromTimeoutConflict attempts to recover from a timeout or conflict error
+func (o *Object) recoverFromTimeoutConflict(ctx context.Context, uploadErr error, remote, dirID string) (*buckets.CreateMetaResponse, error) {
+	if !isTimeoutError(uploadErr) && !isConflictError(uploadErr) {
+		return nil, uploadErr
+	}
+
+	baseName := path.Base(remote)
+
+	existingFile, err := o.f.findFile(ctx, baseName, dirID)
+	if err != nil || existingFile == nil {
+		return nil, uploadErr
+	}
+
+	name, ext := splitNameExt(baseName)
+	o.id = existingFile.FileID
+	return &buckets.CreateMetaResponse{
+		UUID:      existingFile.UUID,
+		FileID:    existingFile.FileID,
+		Name:      name,
+		PlainName: name,
+		Type:      ext,
+		Size:      existingFile.Size,
+	}, nil
+}
+
+// restoreBackupFile restores a backup file after upload failure
+func (o *Object) restoreBackupFile(ctx context.Context, backupUUID, origName, origType string) {
+	if backupUUID == "" {
+		return
+	}
+
+	_ = o.f.pacer.Call(func() (bool, error) {
+		err := files.RenameFile(ctx, o.f.cfg, backupUUID,
+			o.f.opt.Encoding.FromStandardName(origName), origType)
+		return o.f.shouldRetry(ctx, err)
+	})
+}
+
+// Remove deletes a file
+func (o *Object) Remove(ctx context.Context) error {
+	err := o.f.pacer.Call(func() (bool, error) {
+		err := files.DeleteFile(ctx, o.f.cfg, o.uuid)
+		return o.f.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return err
+	}
+	recent.deleted(o.uuid)
+	return nil
+}

@@ -17,8 +17,21 @@ linters:
     #- prealloc # TODO
     - revive
     - unconvert
+  exclusions:
+    rules:
+      - linters:
+          - revive
+        text: 'var-naming: avoid meaningless package names'
+      - linters:
+          - revive
+        text: 'var-naming: avoid package names that conflict with Go standard library package names'
   # Configure checks. Mostly using defaults but with some commented exceptions.
   settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
     staticcheck:
       # With staticcheck there is only one setting, so to extend the implicit
       # default value it must be explicitly included.
@@ -33,6 +46,11 @@ linters:
         - -ST1022
         # Disable quickfix checks
         - -QF*
+        # Disabled because its dataflow analysis (new in staticcheck
+        # 0.8.0) makes linting large packages more than 10x slower,
+        # which takes the CI lint job past its timeout, and it
+        # produces false positives (eg on operations.Delete).
+        - -SA4023
     gocritic:
       # With gocritic there are different settings, but since enabled-checks
       # and disabled-checks cannot both be set, for full customization the
@@ -130,6 +148,7 @@ linters:
           disabled: false
         - name: var-naming
           disabled: false
+
 
 formatters:
   enable:

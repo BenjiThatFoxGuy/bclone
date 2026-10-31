@@ -21,6 +21,11 @@ import (
 	"github.com/rclone/rclone/lib/rest"
 )
 
+const (
+	defaultUploadCutoff = fs.SizeSuffix(500 * 1024 * 1024)
+	defaultChunkSize    = fs.SizeSuffix(64 * 1024 * 1024)
+)
+
 // Register the backend with Rclone
 func init() {
 	fs.Register(&fs.RegInfo{
@@ -33,6 +38,17 @@ func init() {
 			Required:  true,
 			Sensitive: true,
 		},
+			{
+				Name:     "upload_cutoff",
+				Help:     "Cutoff for switching to chunked upload. Any files larger than this will be uploaded in chunks of chunk_size.",
+				Default:  defaultUploadCutoff,
+				Advanced: true,
+			}, {
+				Name:     "chunk_size",
+				Help:     "Chunk size to use for uploading. Used for multipart uploads.",
+				Default:  defaultChunkSize,
+				Advanced: true,
+			},
 			{
 				Name:     config.ConfigEncoding,
 				Help:     config.ConfigEncodingHelp,
@@ -72,8 +88,10 @@ func init() {
 
 // Options defines the configuration for the FileLu backend
 type Options struct {
-	Key string               `config:"key"`
-	Enc encoder.MultiEncoder `config:"encoding"`
+	Key          string               `config:"key"`
+	Enc          encoder.MultiEncoder `config:"encoding"`
+	UploadCutoff fs.SizeSuffix        `config:"upload_cutoff"`
+	ChunkSize    fs.SizeSuffix        `config:"chunk_size"`
 }
 
 // Fs represents the FileLu file system
@@ -189,7 +207,6 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 	return f.deleteFolder(ctx, fullPath)
 }
 
-// List returns a list of files and folders
 // List returns a list of files and folders for the given directory
 func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 	// Compose full path for API call
@@ -205,38 +222,36 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		return nil, err
 	}
 
-	fldMap := map[string]bool{}
 	for _, folder := range result.Result.Folders {
-		fldMap[folder.FldID.String()] = true
 		if f.root == "" && dir == "" && strings.Contains(folder.Path, "/") {
 			continue
 		}
 
-		paths := strings.Split(folder.Path, fullPath+"/")
-		remote := paths[0]
-		if len(paths) > 1 {
-			remote = paths[1]
+		folderPath := strings.Trim(folder.Path, "/")
+		root := strings.Trim(f.root, "/")
+
+		remotePathWithoutRoot := folderPath
+
+		if root != "" {
+			if remotePathWithoutRoot == root {
+				continue
+			}
+			remotePathWithoutRoot = strings.TrimPrefix(remotePathWithoutRoot, root+"/")
 		}
 
-		if strings.Contains(remote, "/") {
+		remotePathWithoutRoot = strings.TrimPrefix(remotePathWithoutRoot, "/")
+
+		if remotePathWithoutRoot == "" {
 			continue
 		}
 
-		pathsWithoutRoot := strings.Split(folder.Path, "/"+f.root+"/")
-		remotePathWithoutRoot := pathsWithoutRoot[0]
-		if len(pathsWithoutRoot) > 1 {
-			remotePathWithoutRoot = pathsWithoutRoot[1]
-		}
-		remotePathWithoutRoot = strings.TrimPrefix(remotePathWithoutRoot, "/")
 		entries = append(entries, fs.NewDir(remotePathWithoutRoot, time.Now()))
 	}
+
 	for _, file := range result.Result.Files {
-		if _, ok := fldMap[file.FldID.String()]; ok {
-			continue
-		}
 		remote := path.Join(dir, file.Name)
-		// trim leading slashes
 		remote = strings.TrimPrefix(remote, "/")
+
 		obj := &Object{
 			fs:      f,
 			remote:  remote,
@@ -250,23 +265,11 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 
 // Put uploads a file directly to the destination folder in the FileLu storage system.
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	if src.Size() == 0 {
-		return nil, fs.ErrorCantUploadEmptyFiles
+	o := &Object{
+		fs:     f,
+		remote: src.Remote(),
 	}
-
-	err := f.uploadFile(ctx, in, src.Remote())
-	if err != nil {
-		return nil, err
-	}
-
-	newObject := &Object{
-		fs:      f,
-		remote:  src.Remote(),
-		size:    src.Size(),
-		modTime: src.ModTime(ctx),
-	}
-	fs.Infof(f, "Put: Successfully uploaded new file %q", src.Remote())
-	return newObject, nil
+	return o, o.Update(ctx, in, src, options...)
 }
 
 // Move moves the file to the specified location
