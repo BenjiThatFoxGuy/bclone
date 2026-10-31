@@ -4,10 +4,12 @@ package iclouddrive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +41,9 @@ type PhotosFs struct {
 	startTime  time.Time
 	mu         sync.Mutex
 	photos     *api.PhotosService
+
+	removeMu sync.Mutex
+	removed  map[string]map[string]struct{} // asset ID -> resource keys of its files removed so far
 }
 
 // PhotosObject describes an iCloud Photos object
@@ -55,6 +60,9 @@ type PhotosObject struct {
 	addedDate   int64
 	isFavorite  bool
 	isHidden    bool
+	assetID     string // CPLAsset recordName, needed to delete
+	assetFiles  int    // files listed for the asset, all of which must be removed before it is deleted
+	deleted     bool   // already in Recently Deleted
 }
 
 // NewFsPhotos constructs an Fs for Photos from the path, container:path
@@ -337,20 +345,23 @@ func (f *PhotosFs) newPhotosObject(remote string, photo *api.Photo, zone string)
 		addedDate:   photo.AddedDate,
 		isFavorite:  photo.IsFavorite,
 		isHidden:    photo.IsHidden,
+		assetID:     photo.AssetID,
+		assetFiles:  photo.AssetFiles,
+		deleted:     slices.Contains(photo.SmartAlbums, "Recently Deleted"),
 	}
 }
 
-// Put is not supported for this read-only backend
+// Put is not supported: the Photos service can only read and delete
 func (f *PhotosFs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
 	return nil, fs.ErrorNotImplemented
 }
 
-// Mkdir is not supported for this read-only backend
+// Mkdir is not supported: the Photos service can only read and delete
 func (f *PhotosFs) Mkdir(ctx context.Context, dir string) error {
 	return fs.ErrorNotImplemented
 }
 
-// Rmdir is not supported for this read-only backend
+// Rmdir is not supported: the Photos service can only read and delete
 func (f *PhotosFs) Rmdir(ctx context.Context, dir string) error {
 	return fs.ErrorNotImplemented
 }
@@ -529,14 +540,61 @@ func (o *PhotosObject) Open(ctx context.Context, options ...fs.OpenOption) (io.R
 	return resp.Body, nil
 }
 
-// Update is not supported for this read-only backend
+// Update is not supported: the Photos service can only read and delete
 func (o *PhotosObject) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
 	return fs.ErrorNotImplemented
 }
 
-// Remove is not supported for this read-only backend
+// Remove moves the photo to Recently Deleted, where iCloud keeps it for 30
+// days.
+//
+// A photo can list as several files (Live Photo video, edited version, RAW
+// alternative) which all belong to one asset and can only be deleted
+// together, so the asset is deleted when the last of its files is removed.
+// Until then the earlier files stay in iCloud. Deleting removes the photo
+// from the whole library, not only from the album it was listed in.
 func (o *PhotosObject) Remove(ctx context.Context) error {
-	return fs.ErrorNotImplemented
+	if o.deleted {
+		return errors.New("already in Recently Deleted: permanent deletion is not supported")
+	}
+	if o.assetID == "" {
+		return errors.New("can't delete: the asset record for this file is unknown")
+	}
+
+	f := o.fs
+	f.removeMu.Lock()
+	if f.removed == nil {
+		f.removed = make(map[string]map[string]struct{})
+	}
+	keys := f.removed[o.assetID]
+	if keys == nil {
+		keys = make(map[string]struct{})
+		f.removed[o.assetID] = keys
+	}
+	keys[o.resourceKey] = struct{}{}
+	remaining := o.assetFiles - len(keys)
+	if remaining > 0 {
+		f.removeMu.Unlock()
+		fs.Infof(o, "Kept in iCloud until the other %d file(s) of this photo are removed too", remaining)
+		return nil
+	}
+	delete(f.removed, o.assetID)
+	f.removeMu.Unlock()
+
+	ps, err := f.photosService(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get photos service: %w", err)
+	}
+	if err := ps.DeleteAsset(ctx, o.assetID, o.zone); err != nil {
+		// Let a retry of any of its files try again
+		f.removeMu.Lock()
+		f.removed[o.assetID] = keys
+		delete(keys, o.resourceKey)
+		f.removeMu.Unlock()
+		return err
+	}
+	fs.Debugf(o, "Moved to Recently Deleted")
+	return nil
 }
 
 // resolveAlbum finds an album by path, traversing folder hierarchy

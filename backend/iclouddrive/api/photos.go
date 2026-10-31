@@ -367,6 +367,8 @@ type Photo struct {
 	IsHidden    bool
 	SmartAlbums []string // smart album names this photo belongs to (for delta sync routing)
 	ResourceKey string   // CloudKit field name for download (default: resOriginalRes)
+	AssetID     string   // CPLAsset recordName; deleting it removes every file it lists as
+	AssetFiles  int      // number of files listed for the asset (original plus companions)
 }
 
 // companion creates a derivative Photo entry sharing metadata with the parent
@@ -382,6 +384,7 @@ func (p *Photo) companion(id, filename, resourceKey string, size int64) *Photo {
 		IsHidden:    p.IsHidden,
 		ResourceKey: resourceKey,
 		SmartAlbums: p.SmartAlbums,
+		AssetID:     p.AssetID,
 	}
 }
 
@@ -1535,6 +1538,10 @@ func (album *Album) loadDiskCacheFrom(cacheDir string) ([]*Photo, bool) {
 	if err := json.Unmarshal(data, &photos); err != nil {
 		return nil, false
 	}
+	// Caches written before AssetID existed can't be used for deletes
+	if len(photos) > 0 && !slices.ContainsFunc(photos, func(p *Photo) bool { return p.AssetID != "" }) {
+		return nil, false
+	}
 	return photos, true
 }
 
@@ -1816,6 +1823,9 @@ func deduplicateFilenames(photos []*Photo) {
 // Returns 1-2 entries: the photo itself, plus a .MOV companion for Live Photos
 func buildPhotos(master *photoRecord, asset *photoRecord) []*Photo {
 	photo := &Photo{ID: master.RecordName}
+	if asset != nil {
+		photo.AssetID = asset.RecordName
+	}
 
 	if master.Fields.FilenameEnc != nil {
 		if master.Fields.FilenameEnc.Type == "STRING" {
@@ -1904,6 +1914,9 @@ func buildPhotos(master *photoRecord, asset *photoRecord) []*Photo {
 		result = append(result, alt)
 	}
 
+	for _, p := range result {
+		p.AssetFiles = len(result)
+	}
 	return result
 }
 
@@ -2304,6 +2317,79 @@ func (ps *PhotosService) LookupDownloadURL(ctx context.Context, recordName, zone
 	}
 
 	return res.Value.DownloadURL, nil
+}
+
+// DeleteAsset moves a CPLAsset to Recently Deleted, where iCloud keeps it
+// for 30 days before removing it for good. Every file listed for the asset
+// (Live Photo video, edited version, RAW alternative) goes with it, and it
+// disappears from every album, not just the one it was listed in.
+func (ps *PhotosService) DeleteAsset(ctx context.Context, assetID, zone string) error {
+	area, zoneID := ps.resolveZone(zone)
+
+	// The update needs the record's current change tag, and the one from the
+	// listing may be stale, so look it up and retry once on CONFLICT.
+	var lastErr error
+	for range 2 {
+		var lookup struct {
+			Records []struct {
+				RecordName      string `json:"recordName"`
+				RecordType      string `json:"recordType"`
+				RecordChangeTag string `json:"recordChangeTag"`
+				ServerErrorCode string `json:"serverErrorCode"`
+				Reason          string `json:"reason"`
+			} `json:"records"`
+		}
+		query := map[string]any{
+			"records":     []map[string]any{{"recordName": assetID}},
+			"zoneID":      zoneID,
+			"desiredKeys": []string{"isDeleted"},
+		}
+		if err := ps.requestForArea(ctx, area, "records/lookup", query, &lookup); err != nil {
+			return fmt.Errorf("failed to look up asset %q: %w", assetID, err)
+		}
+		if len(lookup.Records) == 0 {
+			return fmt.Errorf("asset %q not found", assetID)
+		}
+		rec := lookup.Records[0]
+		if rec.ServerErrorCode != "" {
+			return fmt.Errorf("failed to look up asset %q: %s: %s", assetID, rec.ServerErrorCode, rec.Reason)
+		}
+		if rec.RecordType != "CPLAsset" {
+			return fmt.Errorf("record %q is a %s, not a CPLAsset", assetID, rec.RecordType)
+		}
+
+		modify := map[string]any{
+			"atomic":      true,
+			"desiredKeys": []string{"isDeleted"},
+			"operations": []map[string]any{{
+				"operationType": "update",
+				"record": map[string]any{
+					"recordName":      assetID,
+					"recordType":      "CPLAsset",
+					"recordChangeTag": rec.RecordChangeTag,
+					"fields":          map[string]any{"isDeleted": map[string]any{"value": 1}},
+				},
+			}},
+			"zoneID": zoneID,
+		}
+		var result struct {
+			Records []struct {
+				ServerErrorCode string `json:"serverErrorCode"`
+				Reason          string `json:"reason"`
+			} `json:"records"`
+		}
+		if err := ps.requestForArea(ctx, area, "records/modify", modify, &result); err != nil {
+			return fmt.Errorf("failed to delete asset %q: %w", assetID, err)
+		}
+		if len(result.Records) == 0 || result.Records[0].ServerErrorCode == "" {
+			return nil
+		}
+		lastErr = fmt.Errorf("failed to delete asset %q: %s: %s", assetID, result.Records[0].ServerErrorCode, result.Records[0].Reason)
+		if result.Records[0].ServerErrorCode != "CONFLICT" {
+			return lastErr
+		}
+	}
+	return lastErr
 }
 
 // checkIndexingState warns if the iCloud Photo Library is still indexing

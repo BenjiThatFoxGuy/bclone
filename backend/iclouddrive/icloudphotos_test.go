@@ -514,3 +514,27 @@ func TestNotifyZoneChange(t *testing.T) {
 		})
 	}
 }
+
+func TestPhotosObjectRemoveWaitsForCompanions(t *testing.T) {
+	f := &PhotosFs{name: "test", photos: api.NewTestPhotosService(nil)}
+	photo := &PhotosObject{fs: f, remote: "a/IMG.HEIC", assetID: "asset-1", assetFiles: 2, resourceKey: "resOriginalRes", zone: "PrimarySync"}
+	video := &PhotosObject{fs: f, remote: "a/IMG.MOV", assetID: "asset-1", assetFiles: 2, resourceKey: "resOriginalVidComplRes", zone: "PrimarySync"}
+	ctx := context.Background()
+
+	// The first file of a Live Photo only marks it: nothing is deleted yet
+	require.NoError(t, photo.Remove(ctx))
+	// Removing the same file again doesn't count twice
+	require.NoError(t, photo.Remove(ctx))
+
+	// The last file deletes the asset; the test service has no network so it fails
+	require.Error(t, video.Remove(ctx))
+	// and a retry of it tries the delete again rather than being swallowed
+	require.Error(t, video.Remove(ctx))
+}
+
+func TestPhotosObjectRemoveRefuses(t *testing.T) {
+	f := &PhotosFs{name: "test"}
+	ctx := context.Background()
+	assert.ErrorContains(t, (&PhotosObject{fs: f, assetID: "a", assetFiles: 1, deleted: true}).Remove(ctx), "Recently Deleted")
+	assert.ErrorContains(t, (&PhotosObject{fs: f, assetFiles: 1}).Remove(ctx), "unknown")
+}

@@ -119,7 +119,7 @@ The iCloud Drive backend also supports accessing iCloud Photos by setting the
 rclone lsd iclouddrive: --iclouddrive-service photos
 ```
 
-This presents a read-only hierarchy rooted at photo libraries:
+This presents a hierarchy rooted at photo libraries:
 
 - **Level 1**: Photo libraries — your personal library (`PrimarySync`) and
   any Shared Photo Library (`SharedSync-XXXX`)
@@ -199,10 +199,25 @@ The first listing of a very large album (e.g. 75,000 items in "All
 Photos") can take several minutes due to API pagination limits. This
 happens once — subsequent listings use the disk cache.
 
+### Deleting photos
+
+Deleting a photo, for example as the source of `rclone move`, moves it to
+Recently Deleted, where iCloud keeps it for 30 days before removing it
+for good. It is removed from the whole library, not only from the album
+it was listed in.
+
+A Live Photo, an edited photo or a RAW+JPEG pair lists as several files
+but is a single item in iCloud, so it is only deleted once all of its
+files have been removed. If some of them are left out, for example by a
+filter, the photo stays in iCloud and the files that were removed keep
+being listed.
+
+Files in Recently Deleted can't be deleted: permanent deletion is not
+supported.
+
 ### Limitations
 
-iCloud Photos is read-only. Upload, delete, rename, and move operations
-are not supported.
+Upload, rename and server-side move are not supported.
 
 ## Advanced Data Protection
 

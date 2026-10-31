@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -1313,4 +1315,89 @@ func TestCkBoolFieldUnmarshal(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, record.Fields.IsDeleted)
 	assert.True(t, record.Fields.IsDeleted.Value)
+}
+
+func TestDeleteAsset(t *testing.T) {
+	var modifies []map[string]any
+	lookups := 0
+	conflictsLeft := 1
+	ps := newHTTPTestPhotosService(t, "test", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/records/lookup"):
+			lookups++
+			writeJSON(t, w, map[string]any{"records": []map[string]any{{
+				"recordName":      "asset-1",
+				"recordType":      "CPLAsset",
+				"recordChangeTag": fmt.Sprintf("tag-%d", lookups),
+			}}})
+		case strings.Contains(r.URL.Path, "/records/modify"):
+			var body map[string]any
+			require.NoError(t, readJSONBody(r, &body))
+			modifies = append(modifies, body)
+			if conflictsLeft > 0 {
+				conflictsLeft--
+				writeJSON(t, w, map[string]any{"records": []map[string]any{{"serverErrorCode": "CONFLICT", "reason": "stale tag"}}})
+				return
+			}
+			writeJSON(t, w, map[string]any{"records": []map[string]any{{"recordName": "asset-1"}}})
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+	})
+
+	require.NoError(t, ps.DeleteAsset(context.Background(), "asset-1", "PrimarySync"))
+	require.Len(t, modifies, 2, "a CONFLICT is retried once with a fresh change tag")
+
+	op := modifies[1]["operations"].([]any)[0].(map[string]any)
+	assert.Equal(t, "update", op["operationType"])
+	record := op["record"].(map[string]any)
+	assert.Equal(t, "asset-1", record["recordName"])
+	assert.Equal(t, "CPLAsset", record["recordType"])
+	assert.Equal(t, "tag-2", record["recordChangeTag"])
+	assert.Equal(t, map[string]any{"isDeleted": map[string]any{"value": float64(1)}}, record["fields"])
+	assert.Equal(t, "PrimarySync", modifies[1]["zoneID"].(map[string]any)["zoneName"])
+}
+
+func TestDeleteAssetRefusesNonAsset(t *testing.T) {
+	ps := newHTTPTestPhotosService(t, "test", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/records/modify") {
+			t.Error("must not modify a record that isn't a CPLAsset")
+		}
+		writeJSON(t, w, map[string]any{"records": []map[string]any{{
+			"recordName": "master-1", "recordType": "CPLMaster", "recordChangeTag": "x",
+		}}})
+	})
+	err := ps.DeleteAsset(context.Background(), "master-1", "PrimarySync")
+	assert.ErrorContains(t, err, "not a CPLAsset")
+}
+
+func TestBuildPhotosAssetFiles(t *testing.T) {
+	master := &photoRecord{RecordName: "master-1", RecordType: "CPLMaster"}
+	master.Fields.FilenameEnc = &ckStringField{Value: "IMG_0001.HEIC", Type: "STRING"}
+	master.Fields.ResOriginalRes = &ckResourceField{}
+	master.Fields.ResOriginalRes.Value.DownloadURL = "https://example.com/a"
+	master.Fields.ResOriginalVidComplRes = &ckResourceField{}
+	master.Fields.ResOriginalVidComplRes.Value.DownloadURL = "https://example.com/b"
+	asset := &photoRecord{RecordName: "asset-1", RecordType: "CPLAsset"}
+
+	photos := buildPhotos(master, asset)
+	require.Len(t, photos, 2)
+	for _, p := range photos {
+		assert.Equal(t, "asset-1", p.AssetID, p.Filename)
+		assert.Equal(t, 2, p.AssetFiles, p.Filename)
+	}
+}
+
+func TestLoadDiskCacheWithoutAssetIDs(t *testing.T) {
+	dir := t.TempDir()
+	album := &Album{ObjectType: "CPLAssetByAssetDateWithoutHiddenOrDeleted"}
+
+	album.saveDiskCacheTo(dir, []*Photo{{ID: "m1", Filename: "a.jpg"}})
+	_, ok := album.loadDiskCacheFrom(dir)
+	assert.False(t, ok, "a cache without asset IDs must be refetched")
+
+	album.saveDiskCacheTo(dir, []*Photo{{ID: "m1", Filename: "a.jpg", AssetID: "a1"}})
+	photos, ok := album.loadDiskCacheFrom(dir)
+	assert.True(t, ok)
+	assert.Len(t, photos, 1)
 }
