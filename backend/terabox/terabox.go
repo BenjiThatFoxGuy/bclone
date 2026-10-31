@@ -42,6 +42,24 @@ const (
 	// attackConstant = 0 // start with max sleep
 )
 
+// errUnsupportedName is returned before any API call when a name contains a
+// character TeraBox cannot store. TeraBox rejects every non-BMP rune (U+10000
+// and above, which includes most emoji) with errno -7 "Invalid file name".
+var errUnsupportedName = errors.New("terabox: file name contains an unsupported non-BMP character (for example an emoji); remove it from the name")
+
+// checkRemoteName rejects names which TeraBox cannot store. rclone's encoder
+// cannot escape these characters because TeraBox has no equivalent
+// representation for them, so failing early gives the user a useful error
+// instead of a delayed errno -7 from /api/precreate.
+func checkRemoteName(remote string) error {
+	for _, r := range remote {
+		if r > 0xFFFF {
+			return fmt.Errorf("%w: %q (U+%04X)", errUnsupportedName, remote, r)
+		}
+	}
+	return nil
+}
+
 // Check the interfaces are satisfied
 var (
 	_ fs.Fs             = (*Fs)(nil)
@@ -89,7 +107,8 @@ func init() {
 				Help:     "Set custom header User Agent",
 				Name:     "user_agent",
 				Advanced: true,
-				Default:  "terabox;1.37.0.7;PC;PC-Windows;10.0.22631;WindowsTeraBox",
+				// matches the official TeraBox PC client 1.49.5 (from the .deb package)
+				Default: "terabox;1.49.5;PC;PC-Linux;6.8.0;TeraBox",
 			},
 			{
 				Help:     "Set extra debug level from 0 to 4 (0 - none; 1 - name of function and params; 2 - response output + body; 3 - request output, 4 - request body)",
@@ -102,10 +121,12 @@ func init() {
 				Help:     config.ConfigEncodingHelp,
 				Advanced: true,
 				// maxFileLength = 255
+				// TeraBox rejects Windows-reserved characters in file names
+				// (: ? " * < > |) - observed as errno -7 "Invalid file name"
+				// from /api/precreate and /api/filemetas. Encode them all.
 				Default: (encoder.Display |
+					encoder.EncodeWin |
 					encoder.EncodeBackQuote |
-					encoder.EncodeDoubleQuote |
-					encoder.EncodeLtGt |
 					encoder.EncodeLeftSpace |
 					encoder.EncodeInvalidUtf8),
 			}},
@@ -121,6 +142,12 @@ type Options struct {
 	UserAgent         string               `config:"user_agent"`
 	DebugLevel        uint8                `config:"debug_level"`
 	Enc               encoder.MultiEncoder `config:"encoding"`
+}
+
+// remotePath joins the standard-encoded root with a standard remote path and
+// converts the whole path to the encoding used on the server.
+func (f *Fs) remotePath(remote string) string {
+	return f.opt.Enc.FromStandardPath(libPath.Join(f.root, remote))
 }
 
 //
@@ -154,6 +181,13 @@ type Fs struct {
 
 	isPremium   bool
 	isPremiumMX sync.Once
+
+	// TeraBox runs filemanager operations asynchronously. Sending deletes in
+	// parallel makes the server answer errno 111 "Other asynchronous tasks in
+	// progress" for most of them, so serialise them and leave a gap between
+	// calls.
+	operationMu   sync.Mutex
+	lastOperation time.Time
 }
 
 // NewFs makes a new Fs object from the path
@@ -189,6 +223,14 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		root = "/"
 	}
 
+	// Reject unsupported names here as well as in the operations below. NewFs
+	// looks the root up with /api/filemetas before Mkdir/Put/NewObject run, so
+	// without this check the user only sees TeraBox's generic "Invalid file
+	// name" error instead of an actionable one.
+	if err := checkRemoteName(root); err != nil {
+		return nil, err
+	}
+
 	f := &Fs{
 		name:     name,
 		root:     root,
@@ -209,9 +251,16 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	if opt.UserAgent != "" {
 		clientConfig.UserAgent = opt.UserAgent
 	}
-	clientConfig.Timeout = 5 * fs.Duration(time.Second)
 
-	f.client = rest.NewClient(fshttp.NewClient(newCtx))
+	httpClient := fshttp.NewClient(newCtx)
+	// Do not set httpClient.Timeout here. It is a deadline for the whole
+	// request including reading the body, so a large file on a slow source
+	// link was killed after 5 minutes while it was still hashing/uploading
+	// ("failed to hash file for upload: ... i/o timeout"). The per-connection
+	// idle timeout (--timeout) still aborts genuinely stalled connections,
+	// and apiExec applies a 60s timeout to API calls that never respond.
+
+	f.client = rest.NewClient(httpClient)
 
 	// update base url for official API Requests [not finished, some methods should be update for compatible]
 	if f.accessToken != "" {
@@ -223,7 +272,7 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		var err error
 
 		// cache the item, for do not request the same data, when will make NewObject on next step, if item is nil, then file or dir not found and we can skip request a List or NewObject
-		if f.origRootItem, err = f.apiItemInfo(ctx, root, true); err != nil {
+		if f.origRootItem, err = f.apiItemInfo(ctx, opt.Enc.FromStandardPath(root), true); err != nil {
 			if !api.ErrIsNum(err, -9) {
 				return nil, err
 			}
@@ -269,6 +318,21 @@ func (f *Fs) Precision() time.Duration {
 
 // Hashes returns the supported hash types of the filesystem
 func (f *Fs) Hashes() hash.Set {
+	// TeraBox's server-side md5 is not a trustworthy content hash.
+	//
+	// Two independent problems were reproduced against the live API:
+	//   - /api/create returns an encoded md5 for some files (for example
+	//     "a9ef9f469ua08..." for the real md5 "170b40ada8cc..."), while
+	//     /api/filemetas returns the plain hash.
+	//   - /api/list returns a stale md5 for some files. A file whose bytes
+	//     are byte-identical to the source (verified with cmp and a fresh
+	//     download) can be listed with a completely different md5.
+	//
+	// Advertising MD5 makes rclone compare transfers against that value,
+	// report good files as "corrupted on transfer" and delete them. The
+	// hash is therefore intentionally not advertised: rclone falls back to
+	// size-based checking, which is correct here. Uploads still compute
+	// and send MD5/CRC32 to TeraBox for dedup and create verification.
 	return hash.Set(hash.None)
 }
 
@@ -309,12 +373,17 @@ func (f *Fs) About(ctx context.Context) (*fs.Usage, error) {
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
 	debug(f.opt, 1, "List %s;", dir)
+	if err := checkRemoteName(dir); err != nil {
+		return nil, err
+	}
 
 	if f.root != "/" && f.origRootItem == nil {
 		return nil, fs.ErrorDirNotFound
 	}
 
-	list, err := f.apiList(ctx, libPath.Join(f.root, dir))
+	// dir comes in as a standard (decoded) rclone path, but TeraBox needs the
+	// on-server name - encode it before the API call
+	list, err := f.apiList(ctx, f.remotePath(dir))
 	if err != nil {
 		if api.ErrIsNum(err, -9) {
 			return nil, fs.ErrorDirNotFound
@@ -349,6 +418,9 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 // returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	debug(f.opt, 1, "NewObject %s;", remote)
+	if err := checkRemoteName(remote); err != nil {
+		return nil, err
+	}
 
 	var item *api.Item
 	if f.origRoot == libPath.Join(f.root, remote) {
@@ -358,7 +430,10 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		item = f.origRootItem
 	} else {
 		var err error
-		item, err = f.apiItemInfo(ctx, libPath.Join(f.root, remote), true)
+		// remote may already contain the file name (copyto / sync with a
+		// single file), so only join when it isn't already part of the path
+		itemPath := f.remotePath(remote)
+		item, err = f.apiItemInfo(ctx, itemPath, true)
 		if err != nil {
 			if api.ErrIsNum(err, -9) {
 				return nil, fs.ErrorObjectNotFound
@@ -398,12 +473,49 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 	if src.Size() < 0 {
 		return nil, errors.New("refusing to update with unknown size")
 	}
-
-	if err := f.apiFileUpload(ctx, libPath.Join(f.root, src.Remote()), src.Size(), src.ModTime(ctx), in, options, 0); err != nil {
+	if err := checkRemoteName(src.Remote()); err != nil {
 		return nil, err
 	}
 
-	return f.NewObject(ctx, src.Remote())
+	// TeraBox rejects some characters in file names (e.g. double quotes),
+	// so apply the configured encoding like every other rclone backend.
+	uploadPath := f.remotePath(src.Remote())
+	if err := f.apiFileUpload(ctx, uploadPath, src.Size(), src.ModTime(ctx), in, options, 0); err != nil {
+		return nil, err
+	}
+
+	// TeraBox indexes new files asynchronously. If the object isn't visible
+	// yet, wait briefly and then fall back to a synthetic object so a
+	// successful upload isn't reported as a failure.
+	return f.newObjectAfterUpload(ctx, src.Remote(), uploadPath, src.Size(), src.ModTime(ctx))
+}
+
+// newObjectAfterUpload looks the freshly uploaded object up, retrying for a
+// while to let the server's index catch up.
+func (f *Fs) newObjectAfterUpload(ctx context.Context, remote, uploadPath string, size int64, modTime time.Time) (fs.Object, error) {
+	var lastErr error
+	for attempt := 0; attempt < 30; attempt++ {
+		obj, err := f.NewObject(ctx, remote)
+		if err == nil {
+			return obj, nil
+		}
+		if !errors.Is(err, fs.ErrorObjectNotFound) {
+			return nil, err
+		}
+		lastErr = err
+		time.Sleep(time.Second)
+	}
+
+	// The upload itself succeeded - report the object instead of failing the
+	// transfer, otherwise sync marks the file as errored and retries forever.
+	fs.Logf(f, "upload of %q succeeded but is not indexed yet", uploadPath)
+	_ = lastErr
+	return &Object{
+		fs:      f,
+		remote:  remote,
+		size:    size,
+		modTime: modTime,
+	}, nil
 }
 
 // Mkdir makes the directory (container, bucket)
@@ -411,8 +523,11 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 // Shouldn't return an error if it already exists
 func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 	debug(f.opt, 1, "Mkdir %s;", dir)
+	if err := checkRemoteName(dir); err != nil {
+		return err
+	}
 
-	pth := libPath.Join(f.root, dir)
+	pth := f.remotePath(dir)
 	if pth == "" || pth == "." || pth == "/" {
 		return nil
 	}
@@ -437,7 +552,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	}
 
 	return f.apiOperation(ctx, "delete", []api.OperationalItem{
-		{Path: libPath.Join(f.root, dir)},
+		{Path: f.remotePath(dir)},
 	})
 }
 
@@ -459,12 +574,16 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 	if src.Size() < 0 {
 		return nil, errors.New("refusing to update with unknown size")
 	}
-
-	if err := f.apiFileUpload(ctx, libPath.Join(f.root, src.Remote()), src.Size(), src.ModTime(ctx), in, options, 1); err != nil {
+	if err := checkRemoteName(src.Remote()); err != nil {
 		return nil, err
 	}
 
-	return f.NewObject(ctx, src.Remote())
+	uploadPath := f.remotePath(src.Remote())
+	if err := f.apiFileUpload(ctx, uploadPath, src.Size(), src.ModTime(ctx), in, options, 1); err != nil {
+		return nil, err
+	}
+
+	return f.newObjectAfterUpload(ctx, src.Remote(), uploadPath, src.Size(), src.ModTime(ctx))
 }
 
 //
@@ -479,6 +598,9 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 // If it isn't possible then return fs.ErrorCantCopy
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	debug(f.opt, 1, "Copy %+v; %s;", src, remote)
+	if err := checkRemoteName(remote); err != nil {
+		return nil, err
+	}
 
 	srcObj, ok := src.(*Object)
 	if !ok {
@@ -486,14 +608,18 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return nil, fs.ErrorCantCopy
 	}
 
-	srcPath := libPath.Join(srcObj.fs.root, srcObj.remote)
+	srcPath := srcObj.fs.remotePath(srcObj.remote)
 	if f.origRootItem == nil && f.root != "/" {
 		if err := f.apiMkDir(ctx, f.root); err != nil && !api.ErrIsNum(err, -8) {
 			return nil, err
 		}
 	}
 
-	if err := f.apiOperation(ctx, "copy", []api.OperationalItem{{Path: srcPath, Destination: f.root, NewName: remote}}); err != nil {
+	dstPath, name := libPath.Split(f.remotePath(remote))
+	if name == "" {
+		return nil, fmt.Errorf("couldn't copy to root directory")
+	}
+	if err := f.apiOperation(ctx, "copy", []api.OperationalItem{{Path: srcPath, Destination: dstPath, NewName: name}}); err != nil {
 		return nil, fmt.Errorf("couldn't copy file: %w", err)
 	}
 
@@ -513,6 +639,9 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 // If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	debug(f.opt, 1, "Move %+v; %s;", src, remote)
+	if err := checkRemoteName(remote); err != nil {
+		return nil, err
+	}
 
 	srcObj, ok := src.(*Object)
 	if !ok {
@@ -520,14 +649,18 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return nil, fs.ErrorCantCopy
 	}
 
-	srcPath := libPath.Join(srcObj.fs.root, srcObj.remote)
+	srcPath := srcObj.fs.remotePath(srcObj.remote)
 	if f.origRootItem == nil && f.root != "/" {
 		if err := f.apiMkDir(ctx, f.root); err != nil && !api.ErrIsNum(err, -8) {
 			return nil, err
 		}
 	}
 
-	if err := f.apiOperation(ctx, "move", []api.OperationalItem{{Path: srcPath, Destination: f.root, NewName: remote}}); err != nil {
+	dstPath, name := libPath.Split(f.remotePath(remote))
+	if name == "" {
+		return nil, fmt.Errorf("couldn't move to root directory")
+	}
+	if err := f.apiOperation(ctx, "move", []api.OperationalItem{{Path: srcPath, Destination: dstPath, NewName: name}}); err != nil {
 		return nil, fmt.Errorf("couldn't move file: %w", err)
 	}
 
@@ -548,6 +681,9 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 // If destination exists then return fs.ErrorDirExists
 func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
 	debug(f.opt, 1, "DirMove %+v; %s; %s;", src, srcRemote, dstRemote)
+	if err := checkRemoteName(dstRemote); err != nil {
+		return err
+	}
 
 	srcFs, ok := src.(*Fs)
 	if !ok {
@@ -555,12 +691,12 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 		return fs.ErrorCantDirMove
 	}
 
-	srcPath := libPath.Join(srcFs.root, srcRemote)
-	if srcFs.root != "/" && srcFs.origRootItem == nil {
-		return fmt.Errorf("source directory not found")
+	srcPath := srcFs.remotePath(srcRemote)
+	if srcPath == "" {
+		return fmt.Errorf("couldn't move root directory")
 	}
 
-	dstPath, name := libPath.Split(libPath.Join(f.root, dstRemote))
+	dstPath, name := libPath.Split(f.remotePath(dstRemote))
 	if name == "" {
 		return fmt.Errorf("couldn't move root directory")
 	}
@@ -591,7 +727,7 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 	debug(f.opt, 1, "Purge %s;", dir)
 
 	return f.apiOperation(ctx, "delete", []api.OperationalItem{
-		{Path: libPath.Join(f.root, dir)},
+		{Path: f.remotePath(dir)},
 	})
 }
 
@@ -689,7 +825,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	debug(o.fs.opt, 1, "Object Open %+v;", options)
 
 	if o.downloadLink == "" {
-		if item, err := o.fs.apiItemInfo(ctx, libPath.Join(o.fs.root, o.remote), true); err == nil && item.DownloadLink != "" {
+		if item, err := o.fs.apiItemInfo(ctx, o.fs.remotePath(o.remote), true); err == nil && item.DownloadLink != "" {
 			o.downloadLink = item.DownloadLink
 		}
 	}
@@ -726,8 +862,11 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if src.Size() < 0 {
 		return errors.New("refusing to update with unknown size")
 	}
+	if err := checkRemoteName(o.remote); err != nil {
+		return err
+	}
 
-	if err := o.fs.apiFileUpload(ctx, libPath.Join(o.fs.root, o.remote), src.Size(), src.ModTime(ctx), in, options, 3); err != nil {
+	if err := o.fs.apiFileUpload(ctx, o.fs.remotePath(o.remote), src.Size(), src.ModTime(ctx), in, options, 3); err != nil {
 		return err
 	}
 
@@ -747,7 +886,8 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 func (o *Object) Remove(ctx context.Context) error {
 	debug(o.fs.opt, 1, "Remove")
 
+	// o.remote is a standard rclone path; the server needs the encoded name
 	return o.fs.apiOperation(ctx, "delete", []api.OperationalItem{
-		{Path: libPath.Join(o.fs.root, o.remote)},
+		{Path: o.fs.remotePath(o.remote)},
 	})
 }
