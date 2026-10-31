@@ -561,7 +561,9 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		for name := range f.albums {
 			if name != "" {
 				// Entries must include the dir prefix for rclone's path matching
-				entries = append(entries, fs.NewDir(dir+"/"+name, time.Now()))
+				d := dir + "/" + name
+				seenNames[d] = true
+				entries = append(entries, fs.NewDir(d, time.Now()))
 			}
 		}
 		f.albumMu.Unlock()
@@ -612,7 +614,13 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 			if rest == "" {
 				continue
 			}
-			if strings.ContainsRune(rest, '/') {
+			// A file written deeper down (e.g. into an album that doesn't
+			// exist yet) makes its parent directory appear here
+			if sub, _, nested := strings.Cut(rest, "/"); nested {
+				if d := prefix + sub; !seenNames[d] {
+					seenNames[d] = true
+					entries = append(entries, fs.NewDir(d, entry.modTime))
+				}
 				continue
 			}
 			if !seenNames[remote] {

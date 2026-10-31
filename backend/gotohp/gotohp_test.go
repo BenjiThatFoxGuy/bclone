@@ -248,9 +248,9 @@ func TestListSynthesizesDirsAndObjects(t *testing.T) {
 	for _, e := range entries {
 		switch e.Remote() {
 		case "NewAlbum":
-			sawDir = true
+			_, sawDir = e.(fs.Directory)
 		case "loose.jpg":
-			sawObj = true
+			_, sawObj = e.(fs.Object)
 		}
 	}
 	if !sawDir {
@@ -258,6 +258,40 @@ func TestListSynthesizesDirsAndObjects(t *testing.T) {
 	}
 	if !sawObj {
 		t.Error("expected loose.jpg object entry")
+	}
+
+	// A file written into an album that doesn't exist yet shows it in Album/
+	f.setPhantom("Album/NewTrip/b.jpg", &phantomEntry{size: 3, modTime: now, createdAt: now})
+	entries, err = f.List(context.Background(), "Album")
+	if err != nil {
+		t.Fatalf("List Album: %v", err)
+	}
+	sawDir = false
+	for _, e := range entries {
+		if e.Remote() == "Album/NewTrip" {
+			_, sawDir = e.(fs.Directory)
+		}
+	}
+	if !sawDir {
+		t.Error("expected a synthesized Album/NewTrip directory entry")
+	}
+
+	// An album that already exists is listed once, not again for its new file
+	f.albumMu.Lock()
+	f.albums["NewTrip"] = "albkey"
+	f.albumMu.Unlock()
+	entries, err = f.List(context.Background(), "Album")
+	if err != nil {
+		t.Fatalf("List Album: %v", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.Remote() == "Album/NewTrip" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("Album/NewTrip listed %d times, want 1", n)
 	}
 }
 
@@ -299,8 +333,10 @@ func TestSyncModeIgnoresPhantomCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Errorf("List returned %d entries in sync mode, want 0", len(entries))
+	for _, e := range entries {
+		if _, isObj := e.(fs.Object); isObj {
+			t.Errorf("List returned object %q in sync mode, want only the Album/ExistingAlbum dirs", e.Remote())
+		}
 	}
 
 	if _, err := gf.NewObject(context.Background(), "photo.jpg"); err != fs.ErrorObjectNotFound {
