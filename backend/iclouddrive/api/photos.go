@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1854,24 +1855,39 @@ func classifySmartAlbums(master *photoRecord, asset *photoRecord) []string {
 	return albums
 }
 
-// deduplicateFilenames renames ALL photos with colliding filenames by appending
-// the full masterID (CloudKit recordName) before the extension. Every duplicate
-// gets the suffix so filenames are stable when photos are added or removed
-// Unique filenames are untouched. Collision-free by construction since CloudKit
-// recordNames are unique. Same pattern as googlephotos which embeds the full
-// media item ID ({55+ chars}) in every filename
+// deduplicateFilenames makes names unique within one album by adding the
+// photo's Unix time (capture time, or the time it was added) as
+// "name-<unix seconds>.ext". Photos that still clash, taken in the same
+// second, get their record ID added as well.
 func deduplicateFilenames(photos []*Photo) {
 	counts := make(map[string]int, len(photos))
 	for _, p := range photos {
 		counts[p.Filename]++
 	}
-	for _, p := range photos {
+	stamped := make(map[string]int, len(photos))
+	names := make([]string, len(photos))
+	for i, p := range photos {
 		if counts[p.Filename] <= 1 {
 			continue
 		}
 		ext := path.Ext(p.Filename)
 		base := strings.TrimSuffix(p.Filename, ext)
-		p.Filename = base + "_" + p.ID + ext
+		ms := p.AssetDate
+		if ms == 0 {
+			ms = p.AddedDate
+		}
+		names[i] = base + "-" + strconv.FormatInt(ms/1000, 10) + ext
+		stamped[names[i]]++
+	}
+	for i, p := range photos {
+		if names[i] == "" {
+			continue
+		}
+		if stamped[names[i]] > 1 {
+			ext := path.Ext(names[i])
+			names[i] = strings.TrimSuffix(names[i], ext) + "-" + p.ID + ext
+		}
+		p.Filename = names[i]
 	}
 }
 

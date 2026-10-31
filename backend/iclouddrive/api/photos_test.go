@@ -854,70 +854,62 @@ func TestGetPhotoByName_CacheHit(t *testing.T) {
 func TestDeduplicateFilenames(t *testing.T) {
 	t.Run("no duplicates unchanged", func(t *testing.T) {
 		photos := []*Photo{
-			{ID: "master1", Filename: "IMG_0001.JPG"},
-			{ID: "master2", Filename: "IMG_0002.JPG"},
+			{ID: "master1", Filename: "IMG_0001.JPG", AssetDate: 1700000000000},
+			{ID: "master2", Filename: "IMG_0002.JPG", AssetDate: 1700000001000},
 		}
 		deduplicateFilenames(photos)
 		assert.Equal(t, "IMG_0001.JPG", photos[0].Filename)
 		assert.Equal(t, "IMG_0002.JPG", photos[1].Filename)
 	})
 
-	t.Run("all duplicates get full ID suffix", func(t *testing.T) {
+	t.Run("duplicates get their unix time", func(t *testing.T) {
 		photos := []*Photo{
-			{ID: "AQJ2Fq0Px7pGM", Filename: "camphoto_001.jpg"},
-			{ID: "BRK3Gr1Qy8qHN", Filename: "camphoto_001.jpg"},
-			{ID: "CSL4Hs2Rz9rIO", Filename: "camphoto_001.jpg"},
+			{ID: "AQJ2Fq0Px7pGM", Filename: "camphoto_001.jpg", AssetDate: 1700000000123},
+			{ID: "BRK3Gr1Qy8qHN", Filename: "camphoto_001.jpg", AssetDate: 1700000060999},
+			{ID: "CSL4Hs2Rz9rIO", Filename: "camphoto_001.jpg", AddedDate: 1700000120000},
 		}
 		deduplicateFilenames(photos)
-		assert.Equal(t, "camphoto_001_AQJ2Fq0Px7pGM.jpg", photos[0].Filename)
-		assert.Equal(t, "camphoto_001_BRK3Gr1Qy8qHN.jpg", photos[1].Filename)
-		assert.Equal(t, "camphoto_001_CSL4Hs2Rz9rIO.jpg", photos[2].Filename)
+		assert.Equal(t, "camphoto_001-1700000000.jpg", photos[0].Filename)
+		assert.Equal(t, "camphoto_001-1700000060.jpg", photos[1].Filename)
+		assert.Equal(t, "camphoto_001-1700000120.jpg", photos[2].Filename, "added date when there is no capture date")
+	})
+
+	t.Run("same second falls back to the ID", func(t *testing.T) {
+		photos := []*Photo{
+			{ID: "A", Filename: "burst.jpg", AssetDate: 1700000000100},
+			{ID: "B", Filename: "burst.jpg", AssetDate: 1700000000900},
+			{ID: "C", Filename: "burst.jpg", AssetDate: 1700000005000},
+		}
+		deduplicateFilenames(photos)
+		assert.Equal(t, "burst-1700000000-A.jpg", photos[0].Filename)
+		assert.Equal(t, "burst-1700000000-B.jpg", photos[1].Filename)
+		assert.Equal(t, "burst-1700000005.jpg", photos[2].Filename)
 	})
 
 	t.Run("no extension handled", func(t *testing.T) {
 		photos := []*Photo{
-			{ID: "masterA", Filename: "noext"},
-			{ID: "masterB", Filename: "noext"},
+			{ID: "masterA", Filename: "noext", AssetDate: 1000},
+			{ID: "masterB", Filename: "noext", AssetDate: 2000},
 		}
 		deduplicateFilenames(photos)
-		assert.Equal(t, "noext_masterA", photos[0].Filename)
-		assert.Equal(t, "noext_masterB", photos[1].Filename)
-	})
-
-	t.Run("deterministic across runs", func(t *testing.T) {
-		mk := func() []*Photo {
-			return []*Photo{
-				{ID: "AQJ2Fq0Px7pGM", Filename: "dup.jpg"},
-				{ID: "BRK3Gr1Qy8qHN", Filename: "dup.jpg"},
-			}
-		}
-		p1 := mk()
-		p2 := mk()
-		deduplicateFilenames(p1)
-		deduplicateFilenames(p2)
-		assert.Equal(t, p1[0].Filename, p2[0].Filename)
-		assert.Equal(t, p1[1].Filename, p2[1].Filename)
+		assert.Equal(t, "noext-1", photos[0].Filename)
+		assert.Equal(t, "noext-2", photos[1].Filename)
 	})
 
 	t.Run("stable when new duplicate added", func(t *testing.T) {
-		// Before: two duplicates
 		before := []*Photo{
-			{ID: "AQJ2Fq0Px7pGM", Filename: "dup.jpg"},
-			{ID: "BRK3Gr1Qy8qHN", Filename: "dup.jpg"},
+			{ID: "AQJ2Fq0Px7pGM", Filename: "dup.jpg", AssetDate: 1700000000000},
+			{ID: "BRK3Gr1Qy8qHN", Filename: "dup.jpg", AssetDate: 1700000100000},
 		}
 		deduplicateFilenames(before)
-		nameA := before[0].Filename
-		nameB := before[1].Filename
-
-		// After: third duplicate added - existing names must not change
 		after := []*Photo{
-			{ID: "AQJ2Fq0Px7pGM", Filename: "dup.jpg"},
-			{ID: "BRK3Gr1Qy8qHN", Filename: "dup.jpg"},
-			{ID: "CSL4Hs2Rz9rIO", Filename: "dup.jpg"},
+			{ID: "AQJ2Fq0Px7pGM", Filename: "dup.jpg", AssetDate: 1700000000000},
+			{ID: "BRK3Gr1Qy8qHN", Filename: "dup.jpg", AssetDate: 1700000100000},
+			{ID: "CSL4Hs2Rz9rIO", Filename: "dup.jpg", AssetDate: 1700000200000},
 		}
 		deduplicateFilenames(after)
-		assert.Equal(t, nameA, after[0].Filename, "existing file A must keep same name")
-		assert.Equal(t, nameB, after[1].Filename, "existing file B must keep same name")
+		assert.Equal(t, before[0].Filename, after[0].Filename, "existing file A must keep same name")
+		assert.Equal(t, before[1].Filename, after[1].Filename, "existing file B must keep same name")
 	})
 }
 
@@ -925,8 +917,8 @@ func TestDeduplicateFilenamesSharedPointers(t *testing.T) {
 	// Photos classified into multiple smart albums share *Photo pointers
 	// deduplicateFilenames mutates Filename in place, so shared pointers
 	// across albums get cross-contaminated unless deep-copied first
-	shared := &Photo{ID: "master1", Filename: "dup.jpg"}
-	other := &Photo{ID: "master2", Filename: "dup.jpg"}
+	shared := &Photo{ID: "master1", Filename: "dup.jpg", AssetDate: 1000}
+	other := &Photo{ID: "master2", Filename: "dup.jpg", AssetDate: 2000}
 
 	albumA := []*Photo{shared, other}
 	albumB := []*Photo{shared} // same pointer, unique in this album
@@ -940,8 +932,8 @@ func TestDeduplicateFilenamesSharedPointers(t *testing.T) {
 	deduplicateFilenames(dedupedA)
 
 	// albumA's dedup copies got suffixes
-	assert.Contains(t, dedupedA[0].Filename, "_master1")
-	assert.Contains(t, dedupedA[1].Filename, "_master2")
+	assert.Equal(t, "dup-1.jpg", dedupedA[0].Filename)
+	assert.Equal(t, "dup-2.jpg", dedupedA[1].Filename)
 
 	// Original shared pointer is untouched - albumB sees clean filename
 	assert.Equal(t, "dup.jpg", albumB[0].Filename, "deep copy must prevent cross-album contamination")
@@ -1554,12 +1546,12 @@ func TestPresentFilenamesThenDeduplicates(t *testing.T) {
 	ps.SetNameOptions(NameOptions{StripOriginalSuffix: true, LowercaseExtension: true})
 	album := &Album{Name: "All Photos", lib: &Library{service: ps}}
 	photos := []*Photo{
-		{ID: "a", Filename: "Shot_Original.PNG"},
-		{ID: "b", Filename: "Shot.png"},
+		{ID: "a", Filename: "Shot_Original.PNG", AssetDate: 1000},
+		{ID: "b", Filename: "Shot.png", AssetDate: 2000},
 		{ID: "c", Filename: "Other_Original.PNG"},
 	}
 	album.presentFilenames(photos)
-	assert.Equal(t, "Shot_a.png", photos[0].Filename)
-	assert.Equal(t, "Shot_b.png", photos[1].Filename)
+	assert.Equal(t, "Shot-1.png", photos[0].Filename)
+	assert.Equal(t, "Shot-2.png", photos[1].Filename)
 	assert.Equal(t, "Other.png", photos[2].Filename)
 }
