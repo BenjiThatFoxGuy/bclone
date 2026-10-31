@@ -43,6 +43,8 @@ jobs:
       - &bootstrap_linux_runner
         name: Bootstrap Linux runner
         if: runner.os == 'Linux'
+        # A runner with a hung apt mirror or a held dpkg lock otherwise sits here forever
+        timeout-minutes: 10
         shell: bash
         run: |
           set -euo pipefail
@@ -76,9 +78,10 @@ jobs:
 
             if (( ${#missing[@]} )); then
               echo "Updating package list..."
-              sudo "$APT_GET" update
+              apt_opts=(-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+              sudo "$APT_GET" "${apt_opts[@]}" update
               echo "Installing missing packages: ${missing[*]}"
-              sudo "$APT_GET" install -y --no-install-recommends "${missing[@]}"
+              sudo "$APT_GET" "${apt_opts[@]}" install -y --no-install-recommends "${missing[@]}"
             else
               echo "Linux runner packages already installed."
             fi
