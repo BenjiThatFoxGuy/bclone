@@ -201,11 +201,12 @@ var _ fs.Fs = MemoryFs
 
 // MemoryObject is an in memory object
 type MemoryObject struct {
-	remote  string
-	modTime time.Time
-	content []byte
-	meta    fs.Metadata
-	fs      fs.Fs
+	remote   string
+	modTime  time.Time
+	content  []byte
+	meta     fs.Metadata
+	fs       fs.Fs
+	mimeType string
 }
 
 // NewMemoryObject returns an in memory Object with the modTime and content passed in
@@ -221,6 +222,12 @@ func NewMemoryObject(remote string, modTime time.Time, content []byte) *MemoryOb
 // WithMetadata adds meta to the MemoryObject
 func (o *MemoryObject) WithMetadata(meta fs.Metadata) *MemoryObject {
 	o.meta = meta
+	return o
+}
+
+// WithMimeType adds mimeType to the MemoryObject
+func (o *MemoryObject) WithMimeType(mimeType string) *MemoryObject {
+	o.mimeType = mimeType
 	return o
 }
 
@@ -339,9 +346,15 @@ func (o *MemoryObject) Metadata(ctx context.Context) (fs.Metadata, error) {
 	return o.meta, nil
 }
 
+// MimeType on the object
+func (o *MemoryObject) MimeType(ctx context.Context) string {
+	return o.mimeType
+}
+
 // Check interfaces
 var (
 	_ fs.Object     = (*MemoryObject)(nil)
+	_ fs.MimeTyper  = (*MemoryObject)(nil)
 	_ fs.Metadataer = (*MemoryObject)(nil)
 )
 
@@ -354,11 +367,21 @@ func shouldRetry(ctx context.Context, resp *http.Response, err error) (bool, err
 	return fserrors.ShouldRetry(err) || fserrors.ShouldRetryHTTP(resp, retryErrorCodes), err
 }
 
+// downloadHeaders returns the --download-headers to send with every request for the URL
+func downloadHeaders(ctx context.Context) map[string]string {
+	headers := map[string]string{}
+	for _, option := range fs.GetConfig(ctx).DownloadHeaders {
+		headers[option.Key] = option.Value
+	}
+	return headers
+}
+
 func (o *HTTPObject) fetch(ctx context.Context) error {
 
 	headOpts := rest.Opts{
-		Method:  "HEAD",
-		RootURL: o.url,
+		Method:       "HEAD",
+		RootURL:      o.url,
+		ExtraHeaders: downloadHeaders(ctx),
 	}
 
 	resp, err := o.client.Call(ctx, &headOpts)
@@ -371,12 +394,11 @@ func (o *HTTPObject) fetch(ctx context.Context) error {
 	}
 
 	getOpts := rest.Opts{
-		Method:  "GET",
-		RootURL: o.url,
-		ExtraHeaders: map[string]string{
-			"Range": "bytes=0-0",
-		},
+		Method:       "GET",
+		RootURL:      o.url,
+		ExtraHeaders: downloadHeaders(ctx),
 	}
+	getOpts.ExtraHeaders["Range"] = "bytes=0-0"
 
 	resp, err = o.client.Call(ctx, &getOpts)
 	if err != nil {
@@ -484,9 +506,10 @@ func (o *HTTPObject) Open(ctx context.Context, options ...fs.OpenOption) (io.Rea
 	fs.FixRangeOption(options, o.size)
 	err = o.p.Call(func() (bool, error) {
 		opts := rest.Opts{
-			Method:  "GET",
-			RootURL: o.url,
-			Options: options,
+			Method:       "GET",
+			RootURL:      o.url,
+			Options:      options,
+			ExtraHeaders: downloadHeaders(ctx),
 		}
 		res, err = o.client.Call(ctx, &opts)
 		return shouldRetry(ctx, res, err)
