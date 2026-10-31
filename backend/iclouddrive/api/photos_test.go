@@ -11,8 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
@@ -1318,6 +1320,10 @@ func TestCkBoolFieldUnmarshal(t *testing.T) {
 }
 
 func TestDeleteAsset(t *testing.T) {
+	old := deleteBackoffBase
+	deleteBackoffBase = time.Millisecond
+	t.Cleanup(func() { deleteBackoffBase = old })
+
 	var modifies []map[string]any
 	lookups := 0
 	conflictsLeft := 1
@@ -1400,4 +1406,72 @@ func TestLoadDiskCacheWithoutAssetIDs(t *testing.T) {
 	photos, ok := album.loadDiskCacheFrom(dir)
 	assert.True(t, ok)
 	assert.Len(t, photos, 1)
+}
+
+func TestDeleteAssetSerializedAndRetried(t *testing.T) {
+	old := deleteBackoffBase
+	deleteBackoffBase = time.Millisecond
+	t.Cleanup(func() { deleteBackoffBase = old })
+
+	var inFlight, maxInFlight atomic.Int32
+	var busy atomic.Int32
+	busy.Store(2)
+	ps := newHTTPTestPhotosService(t, "test", func(w http.ResponseWriter, r *http.Request) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			m := maxInFlight.Load()
+			if n <= m || maxInFlight.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+		if strings.Contains(r.URL.Path, "/records/lookup") {
+			var body struct {
+				Records []struct {
+					RecordName string `json:"recordName"`
+				} `json:"records"`
+			}
+			require.NoError(t, readJSONBody(r, &body))
+			writeJSON(t, w, map[string]any{"records": []map[string]any{{
+				"recordName": body.Records[0].RecordName, "recordType": "CPLAsset", "recordChangeTag": "t",
+			}}})
+			return
+		}
+		if busy.Add(-1) >= 0 {
+			writeJSON(t, w, map[string]any{"records": []map[string]any{{"serverErrorCode": "ZONE_BUSY", "reason": "busy"}}})
+			return
+		}
+		writeJSON(t, w, map[string]any{"records": []map[string]any{{"recordName": "ok"}}})
+	})
+
+	var wg sync.WaitGroup
+	errs := make([]error, 4)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = ps.DeleteAsset(context.Background(), fmt.Sprintf("asset-%d", i), "PrimarySync")
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		assert.NoError(t, err)
+	}
+	assert.Equal(t, int32(1), maxInFlight.Load(), "deletes must not overlap")
+}
+
+func TestDeleteAssetGivesUpOnPermanentError(t *testing.T) {
+	modifies := 0
+	ps := newHTTPTestPhotosService(t, "test", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/records/lookup") {
+			writeJSON(t, w, map[string]any{"records": []map[string]any{{"recordName": "a", "recordType": "CPLAsset", "recordChangeTag": "t"}}})
+			return
+		}
+		modifies++
+		writeJSON(t, w, map[string]any{"records": []map[string]any{{"serverErrorCode": "ACCESS_DENIED", "reason": "nope"}}})
+	})
+	err := ps.DeleteAsset(context.Background(), "a", "PrimarySync")
+	assert.ErrorContains(t, err, "ACCESS_DENIED")
+	assert.Equal(t, 1, modifies)
 }

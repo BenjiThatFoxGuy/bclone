@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rclone/rclone/fs"
 
@@ -159,6 +160,7 @@ type PhotosService struct {
 	shouldRetry ShouldRetryFunc
 	mu          sync.Mutex
 	libraries   map[string]*Library
+	deleteMu    sync.Mutex // serializes DeleteAsset
 }
 
 type libraryDiscovery struct {
@@ -2319,24 +2321,73 @@ func (ps *PhotosService) LookupDownloadURL(ctx context.Context, recordName, zone
 	return res.Value.DownloadURL, nil
 }
 
+// recordError is a per-record error CloudKit returns inside a successful response
+type recordError struct {
+	ServerErrorCode string `json:"serverErrorCode"`
+	Reason          string `json:"reason"`
+	RetryAfter      int    `json:"retryAfter"` // seconds, set with THROTTLED
+}
+
+// Error implements error
+func (e *recordError) Error() string {
+	return e.ServerErrorCode + ": " + e.Reason
+}
+
+// retryable reports whether CloudKit asks for the request to be tried again later
+func (e *recordError) retryable() bool {
+	switch e.ServerErrorCode {
+	case "THROTTLED", "TRY_AGAIN_LATER", "ZONE_BUSY", "INTERNAL_ERROR", "SERVICE_UNAVAILABLE":
+		return true
+	}
+	return false
+}
+
+// deleteBackoffBase is the first wait between delete retries, doubling up to 30s
+var deleteBackoffBase = time.Second
+
+// deleteBackoff returns how long to wait before retry number attempt (from 1)
+func deleteBackoff(attempt int, e *recordError) time.Duration {
+	if e != nil && e.RetryAfter > 0 {
+		return time.Duration(e.RetryAfter) * time.Second
+	}
+	return min(deleteBackoffBase<<(attempt-1), 30*time.Second)
+}
+
 // DeleteAsset moves a CPLAsset to Recently Deleted, where iCloud keeps it
 // for 30 days before removing it for good. Every file listed for the asset
 // (Live Photo video, edited version, RAW alternative) goes with it, and it
 // disappears from every album, not just the one it was listed in.
+//
+// Calls are serialized: CloudKit rejects concurrent writes to a zone.
 func (ps *PhotosService) DeleteAsset(ctx context.Context, assetID, zone string) error {
-	area, zoneID := ps.resolveZone(zone)
+	ps.deleteMu.Lock()
+	defer ps.deleteMu.Unlock()
 
-	// The update needs the record's current change tag, and the one from the
-	// listing may be stale, so look it up and retry once on CONFLICT.
+	area, zoneID := ps.resolveZone(zone)
+	retries := max(fs.GetConfig(ctx).LowLevelRetries, 1)
+
 	var lastErr error
-	for range 2 {
+	for attempt := 1; attempt <= retries; attempt++ {
+		if attempt > 1 {
+			var re *recordError
+			errors.As(lastErr, &re)
+			wait := deleteBackoff(attempt-1, re)
+			fs.Debugf(nil, "iclouddrive photos: retrying delete of %q in %v (%d/%d): %v", assetID, wait, attempt, retries, lastErr)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+
+		// The update needs the record's current change tag, and the one from
+		// the listing may be stale, so look it up on every attempt.
 		var lookup struct {
 			Records []struct {
+				recordError
 				RecordName      string `json:"recordName"`
 				RecordType      string `json:"recordType"`
 				RecordChangeTag string `json:"recordChangeTag"`
-				ServerErrorCode string `json:"serverErrorCode"`
-				Reason          string `json:"reason"`
 			} `json:"records"`
 		}
 		query := map[string]any{
@@ -2352,7 +2403,11 @@ func (ps *PhotosService) DeleteAsset(ctx context.Context, assetID, zone string) 
 		}
 		rec := lookup.Records[0]
 		if rec.ServerErrorCode != "" {
-			return fmt.Errorf("failed to look up asset %q: %s: %s", assetID, rec.ServerErrorCode, rec.Reason)
+			lastErr = fmt.Errorf("failed to look up asset %q: %w", assetID, &rec.recordError)
+			if rec.retryable() {
+				continue
+			}
+			return lastErr
 		}
 		if rec.RecordType != "CPLAsset" {
 			return fmt.Errorf("record %q is a %s, not a CPLAsset", assetID, rec.RecordType)
@@ -2373,10 +2428,7 @@ func (ps *PhotosService) DeleteAsset(ctx context.Context, assetID, zone string) 
 			"zoneID": zoneID,
 		}
 		var result struct {
-			Records []struct {
-				ServerErrorCode string `json:"serverErrorCode"`
-				Reason          string `json:"reason"`
-			} `json:"records"`
+			Records []recordError `json:"records"`
 		}
 		if err := ps.requestForArea(ctx, area, "records/modify", modify, &result); err != nil {
 			return fmt.Errorf("failed to delete asset %q: %w", assetID, err)
@@ -2384,8 +2436,9 @@ func (ps *PhotosService) DeleteAsset(ctx context.Context, assetID, zone string) 
 		if len(result.Records) == 0 || result.Records[0].ServerErrorCode == "" {
 			return nil
 		}
-		lastErr = fmt.Errorf("failed to delete asset %q: %s: %s", assetID, result.Records[0].ServerErrorCode, result.Records[0].Reason)
-		if result.Records[0].ServerErrorCode != "CONFLICT" {
+		re := result.Records[0]
+		lastErr = fmt.Errorf("failed to delete asset %q: %w", assetID, &re)
+		if re.ServerErrorCode != "CONFLICT" && !re.retryable() {
 			return lastErr
 		}
 	}
