@@ -25,3 +25,4 @@ resource_windows_`go
 .gocache/
 .gomodcache/
 DEDUPLICATION.md
+/cmd/bisync/testdata/bisync_vscode_debuggers_launch.json

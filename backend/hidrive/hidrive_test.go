@@ -1,4 +1,4 @@
-﻿// Test HiDrive filesystem interface
+// Test HiDrive filesystem interface
 package hidrive
 
 import (

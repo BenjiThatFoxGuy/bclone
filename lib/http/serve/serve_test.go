@@ -1,4 +1,4 @@
-﻿package serve
+package serve
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/object"
 	"github.com/rclone/rclone/fstest/mockobject"
 	"github.com/stretchr/testify/assert"
 )
@@ -68,6 +70,65 @@ func TestObjectRange(t *testing.T) {
 	assert.Equal(t, "345", string(body))
 }
 
+func TestObjectRangeSuffixLongerThanObject(t *testing.T) {
+	// Regression test for #6310: a suffix range request (e.g. "bytes=-90407")
+	// asking for more bytes than the object contains used to compute a
+	// negative offset and panic with "slice bounds out of range". Per
+	// RFC 7233 section 2.1, the entire object should be served instead.
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "http://example.com/aFile", nil)
+	r.Header.Add("Range", "bytes=-90407")
+	o := mockobject.New("aFile").WithContent([]byte("hello"), mockobject.SeekModeNone)
+	Object(w, r, o)
+	resp := w.Result()
+	assert.Equal(t, http.StatusPartialContent, resp.StatusCode)
+	assert.Equal(t, "5", resp.Header.Get("Content-Length"))
+	assert.Equal(t, "bytes 0-4/5", resp.Header.Get("Content-Range"))
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "hello", string(body))
+}
+
+func TestObjectRangeNotSatisfiable(t *testing.T) {
+	for _, rangeHeader := range []string{"bytes=10-", "bytes=10-12", "bytes=-0", "bytes=5-2", "bytes=20-"} {
+		t.Run(rangeHeader, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest("GET", "http://example.com/aFile", nil)
+			r.Header.Add("Range", rangeHeader)
+			o := object.NewMemoryObject("aFile", time.Now(), []byte("0123456789"))
+			Object(w, r, o)
+			resp := w.Result()
+			assert.Equal(t, http.StatusRequestedRangeNotSatisfiable, resp.StatusCode)
+			assert.Equal(t, "bytes */10", resp.Header.Get("Content-Range"))
+		})
+	}
+}
+
+func TestObjectRangeEndPastObject(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "http://example.com/aFile", nil)
+	r.Header.Add("Range", "bytes=8-20")
+	o := object.NewMemoryObject("aFile", time.Now(), []byte("0123456789"))
+	Object(w, r, o)
+	resp := w.Result()
+	assert.Equal(t, http.StatusPartialContent, resp.StatusCode)
+	assert.Equal(t, "2", resp.Header.Get("Content-Length"))
+	assert.Equal(t, "bytes 8-9/10", resp.Header.Get("Content-Range"))
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "89", string(body))
+}
+
+func TestObjectRangeEmptyObject(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "http://example.com/aFile", nil)
+	r.Header.Add("Range", "bytes=0-")
+	o := object.NewMemoryObject("aFile", time.Now(), []byte{})
+	Object(w, r, o)
+	resp := w.Result()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "0", resp.Header.Get("Content-Length"))
+	assert.Equal(t, "", resp.Header.Get("Content-Range"))
+}
+
 func TestObjectBadRange(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "http://example.com/aFile", nil)
@@ -81,4 +142,24 @@ func TestObjectBadRange(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "Bad Request\n", string(body))
+}
+
+func TestObjectHEADMetadata(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("HEAD", "http://example.com/aFile", nil)
+	m := fs.Metadata{
+		"content-disposition": "inline",
+		"cache-control":       "no-cache",
+		"content-language":    "en",
+		"content-encoding":    "gzip",
+	}
+	o := object.NewMemoryObject("aFile", time.Now(), []byte("")).
+		WithMetadata(m).WithMimeType("text/plain; charset=utf-8")
+	Object(w, r, o)
+	resp := w.Result()
+	assert.Equal(t, "text/plain; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "inline", resp.Header.Get("Content-Disposition"))
+	assert.Equal(t, "no-cache", resp.Header.Get("Cache-Control"))
+	assert.Equal(t, "en", resp.Header.Get("Content-Language"))
+	assert.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
 }

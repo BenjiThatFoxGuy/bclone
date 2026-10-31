@@ -1,12 +1,15 @@
-﻿package log
+package log
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,6 +72,33 @@ func TestGetCaller(t *testing.T) {
 	// assert.Equal(t, "slog_test.go", match[1])
 }
 
+// Test isLogFrame skips logging-machinery frames, including the
+// standard library log/slog frames whose path is trimmed by -trimpath.
+func TestIsLogFrame(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		fn   string
+		want bool
+	}{
+		// rclone's own log packages
+		{"fsLog", "github.com/rclone/rclone/fs/log.go", "github.com/rclone/rclone/fs.Debugf", true},
+		{"fsLogSlog", "github.com/rclone/rclone/fs/log/slog.go", "github.com/rclone/rclone/fs/log.(*OutputHandler).Handle", true},
+		// standard library slog with -trimpath: path is "log/slog/logger.go"
+		{"slogTrimpath", "log/slog/logger.go", "log/slog.(*Logger).log", true},
+		// standard library slog without -trimpath: full path contains "/log/"
+		{"slogFullPath", "/usr/local/go/src/log/slog/logger.go", "log/slog.(*Logger).Log", true},
+		// a real caller must not be skipped
+		{"realCaller", "github.com/rclone/rclone/backend/drive/drive.go", "github.com/rclone/rclone/backend/drive.(*Fs).newObjectWithInfo", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isLogFrame(runtime.Frame{File: tc.file, Function: tc.fn})
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 // Test formatStdLogHeader for various flag combinations.
 func TestFormatStdLogHeader(t *testing.T) {
 	cases := []struct {
@@ -91,9 +121,9 @@ func TestFormatStdLogHeader(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := &OutputHandler{format: tc.format}
+			h := NewOutputHandler(&bytes.Buffer{}, nil, tc.format)
 			buf := &bytes.Buffer{}
-			h.formatStdLogHeader(buf, slog.LevelInfo, t0, tc.object, tc.lineInfo)
+			h.formatStdLogHeader(buf, tc.format, slog.LevelInfo, t0, tc.object, tc.lineInfo)
 			if !strings.HasPrefix(buf.String(), tc.wantPrefix) {
 				t.Errorf("%s: got %q; want prefix %q", tc.name, buf.String(), tc.wantPrefix)
 			}
@@ -110,17 +140,27 @@ func TestEnabled(t *testing.T) {
 	opts := &slog.HandlerOptions{Level: slog.LevelDebug}
 	h2 := NewOutputHandler(&bytes.Buffer{}, opts, 0)
 	assert.True(t, h2.Enabled(context.Background(), slog.LevelDebug))
+
+	// A log level in the config in the context which differs from
+	// the global one overrides the level of the handler
+	ctx, ci := fs.AddConfig(context.Background())
+	assert.False(t, h.Enabled(ctx, slog.LevelDebug))
+	ci.LogLevel = fs.LogLevelDebug
+	assert.True(t, h.Enabled(ctx, slog.LevelDebug))
+	ci.LogLevel = fs.LogLevelError
+	assert.False(t, h.Enabled(ctx, slog.LevelInfo))
+	assert.True(t, h.Enabled(ctx, slog.LevelError))
 }
 
 // Test clearFormatFlags and setFormatFlags bitwise ops.
 func TestClearSetFormatFlags(t *testing.T) {
-	h := &OutputHandler{format: logFormatDate | logFormatTime}
+	h := NewOutputHandler(&bytes.Buffer{}, nil, logFormatDate|logFormatTime)
 
 	h.clearFormatFlags(logFormatTime)
-	assert.True(t, h.format&logFormatTime == 0)
+	assert.True(t, h.getFormat()&logFormatTime == 0)
 
 	h.setFormatFlags(logFormatMicroseconds)
-	assert.True(t, h.format&logFormatMicroseconds != 0)
+	assert.True(t, h.getFormat()&logFormatMicroseconds != 0)
 }
 
 // Test SetOutput and ResetOutput override the default writer.
@@ -198,6 +238,17 @@ func TestAddOutputUseJSONLog(t *testing.T) {
 	assert.Equal(t, "2020/01/02 03:04:05 INFO  : world\n", extraText)
 }
 
+// Test JSON log includes PID when logFormatPid is set.
+func TestJSONLogWithPid(t *testing.T) {
+	buf := &bytes.Buffer{}
+	h := NewOutputHandler(buf, nil, logFormatJSON|logFormatPid)
+
+	r := slog.NewRecord(t0, slog.LevelInfo, "hello", 0)
+	require.NoError(t, h.Handle(context.Background(), r))
+	output := buf.String()
+	assert.Contains(t, output, fmt.Sprintf(`"pid":%d`, os.Getpid()))
+}
+
 // Test WithAttrs and WithGroup return new handlers with same settings.
 func TestWithAttrsAndGroup(t *testing.T) {
 	buf := &bytes.Buffer{}
@@ -220,7 +271,7 @@ func TestTextLogAndJsonLog(t *testing.T) {
 
 	// textLog
 	bufText := &bytes.Buffer{}
-	require.NoError(t, h.textLog(context.Background(), bufText, r))
+	require.NoError(t, h.textLog(context.Background(), bufText, h.getFormat(), r))
 	out := bufText.String()
 	if !strings.Contains(out, "WARNING") || !strings.Contains(out, "obj:") || !strings.HasSuffix(out, "\n") {
 		t.Errorf("textLog output = %q", out)
@@ -228,10 +279,104 @@ func TestTextLogAndJsonLog(t *testing.T) {
 
 	// jsonLog
 	bufJSON := &bytes.Buffer{}
-	require.NoError(t, h.jsonLog(context.Background(), bufJSON, r))
+	require.NoError(t, h.jsonLog(context.Background(), bufJSON, h.getFormat(), r))
 	j := bufJSON.String()
 	if !strings.Contains(j, `"level":"warning"`) || !strings.Contains(j, `"msg":"msg!"`) {
 		t.Errorf("jsonLog output = %q", j)
+	}
+}
+
+// Test concurrent access to the handler does not race or deadlock.
+func TestOutputHandlerConcurrency(t *testing.T) {
+	h := NewOutputHandler(io.Discard, nil, logFormatDate|logFormatTime)
+	ctx := context.Background()
+
+	const goroutines = 10
+	const iterations = 500
+
+	var wg sync.WaitGroup
+
+	// Goroutines calling Handle (text format)
+	for range goroutines {
+		wg.Go(func() {
+			for range iterations {
+				r := slog.NewRecord(t0, slog.LevelInfo, "concurrent text", 0)
+				r.AddAttrs(slog.String("object", "obj"))
+				_ = h.Handle(ctx, r)
+			}
+		})
+	}
+
+	// Goroutines calling setFormat (switching between text and JSON)
+	for range 2 {
+		wg.Go(func() {
+			for j := range iterations {
+				if j%2 == 0 {
+					h.setFormat(logFormatDate | logFormatTime)
+				} else {
+					h.setFormat(logFormatJSON)
+				}
+			}
+		})
+	}
+
+	// Goroutines calling setFormatFlags / clearFormatFlags
+	wg.Go(func() {
+		for range iterations {
+			h.setFormatFlags(logFormatPid | logFormatMicroseconds)
+			h.clearFormatFlags(logFormatPid | logFormatMicroseconds)
+		}
+	})
+
+	// Goroutines calling SetLevel
+	wg.Go(func() {
+		for j := range iterations {
+			if j%2 == 0 {
+				h.SetLevel(slog.LevelDebug)
+			} else {
+				h.SetLevel(slog.LevelInfo)
+			}
+		}
+	})
+
+	// Goroutines calling SetOutput / ResetOutput
+	wg.Go(func() {
+		noop := func(_ slog.Level, _ string) {}
+		for range iterations {
+			h.SetOutput(noop)
+			h.ResetOutput()
+		}
+	})
+
+	// Goroutines calling WithAttrs / WithGroup (reads format)
+	wg.Go(func() {
+		for range iterations {
+			_ = h.WithAttrs(nil)
+			_ = h.WithGroup("g")
+		}
+	})
+
+	// Goroutine calling AddOutput alternating JSON and text
+	wg.Go(func() {
+		noop := func(_ slog.Level, _ string) {}
+		for j := range 20 {
+			h.AddOutput(j%2 == 0, noop)
+			time.Sleep(time.Millisecond)
+		}
+	})
+
+	// Use a channel with a timeout to detect deadlocks
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out waiting for concurrent goroutines — probable deadlock")
 	}
 }
 

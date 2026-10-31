@@ -1,4 +1,4 @@
-﻿// Package chunksize calculates a suitable chunk size for large uploads
+// Package chunksize calculates a suitable chunk size for large uploads
 package chunksize
 
 import (

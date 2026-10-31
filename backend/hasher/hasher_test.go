@@ -1,4 +1,4 @@
-﻿package hasher_test
+package hasher_test
 
 import (
 	"os"

@@ -1,4 +1,4 @@
-﻿// Package test provides the test command.
+// Package test provides the test command.
 package test
 
 import (
@@ -18,7 +18,7 @@ var Command = &cobra.Command{
 
 Select which test command you want with the subcommand, eg
 
-` + "```sh" + `
+` + "```console" + `
 rclone test memory remote:
 ` + "```" + `
 

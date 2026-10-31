@@ -1,4 +1,4 @@
-﻿package rest
+package rest
 
 import (
 	"fmt"
@@ -44,6 +44,46 @@ func TestURLJoin(t *testing.T) {
 	}
 }
 
+func TestURLJoinRoot(t *testing.T) {
+	for i, test := range []struct {
+		base   string
+		root   string
+		wantOK bool
+		want   string
+	}{
+		{"http://example.com/dir/", "", true, "http://example.com/dir/"},
+		{"http://example.com/dir/", "potato", true, "http://example.com/dir/potato"},
+		{"http://example.com/dir/", "sub/potato/", true, "http://example.com/dir/sub/potato/"},
+		{"http://example.com/dir/", "/potato", true, "http://example.com/potato"},
+		{"http://example.com/dir/", "../potato", true, "http://example.com/potato"},
+		{"http://example.com/dir/", "With colon :", true, "http://example.com/dir/With%20colon%20:"},
+		{"http://example.com/dir/", "http://example.com/dir/", true, "http://example.com/dir/http://example.com/dir/"},
+		{"http://user:pass@example.com/dir/", "potato", true, "http://user:pass@example.com/dir/potato"},
+		// network-path references are rejected, even for the same host
+		{"http://example.com/dir/", "//evil.example/", false, ""},
+		{"http://example.com/dir/", "//evil.example", false, ""},
+		{"http://example.com/dir/", "//evil.example/potato", false, ""},
+		{"http://example.com/dir/", "//example.com/dir/", false, ""},
+		{"http://example.com/dir/", "//example.com:8080/dir/", false, ""},
+		{"http://example.com/dir/", "//user:pass@example.com/dir/", false, ""},
+		{"http://user:pass@example.com/dir/", "//other:pass@example.com/dir/", false, ""},
+		{"http://user:pass@example.com/dir/", "//example.com/dir/", false, ""},
+		{"http://example.com/dir/", "//[::1]/potato", false, ""},
+	} {
+		u, err := url.Parse(test.base)
+		require.NoError(t, err)
+		got, err := URLJoinRoot(u, test.root)
+		gotOK := err == nil
+		what := fmt.Sprintf("test %d base=%q, root=%q", i, test.base, test.root)
+		assert.Equal(t, test.wantOK, gotOK, what)
+		var gotString string
+		if gotOK {
+			gotString = got.String()
+		}
+		assert.Equal(t, test.want, gotString, what)
+	}
+}
+
 func TestURLPathEscape(t *testing.T) {
 	for i, test := range []struct {
 		path string
@@ -66,7 +106,10 @@ func TestURLPathEscapeAll(t *testing.T) {
 		want string
 	}{
 		{"", ""},
-		{"/hello.txt", "/hello%2Etxt"},
+		// RFC 3986 unreserved characters must not be encoded
+		{"/hello.txt", "/hello.txt"},
+		{"file-name_v2.~bak", "file-name_v2.~bak"},
+		// Reserved and other characters must be encoded
 		{"With Space", "With%20Space"},
 		{"With Colon:", "With%20Colon%3A"},
 		{"With Percent%", "With%20Percent%25"},

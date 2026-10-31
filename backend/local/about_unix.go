@@ -1,4 +1,4 @@
-﻿//go:build darwin || dragonfly || freebsd || linux
+//go:build darwin || dragonfly || freebsd || linux
 
 package local
 

@@ -1,4 +1,4 @@
-﻿// Package docker serves a remote suitable for use with docker volume api
+// Package docker serves a remote suitable for use with docker volume api
 package docker
 
 import (
@@ -73,6 +73,10 @@ var Command = &cobra.Command{
 				return err
 			}
 			srv := NewServer(drv)
+			// Restore mounts in background after the server starts
+			// listening so Docker can communicate with the plugin
+			// even if individual mounts are slow.
+			go drv.RestoreMounts()
 			if socketAddr == "" {
 				// Listen on unix socket at /run/docker/plugins/<pluginName>.sock
 				return srv.ServeUnix(pluginName, socketGid)

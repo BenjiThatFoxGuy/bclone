@@ -1,4 +1,4 @@
-﻿package readers
+package readers
 
 // ErrorReader wraps an error to return on Read
 type ErrorReader struct {

@@ -1,4 +1,4 @@
-﻿// Test Local filesystem interface
+// Test Local filesystem interface
 package local_test
 
 import (

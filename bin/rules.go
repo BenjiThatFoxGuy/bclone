@@ -1,4 +1,4 @@
-﻿// Ruleguard file implementing custom linting rules.
+// Ruleguard file implementing custom linting rules.
 //
 // Note that when used from golangci-lint (using the gocritic linter configured
 // with the ruleguard check), because rule files are not handled by
@@ -13,7 +13,6 @@
 // https://github.com/quasilyte/go-ruleguard?tab=readme-ov-file#troubleshooting
 
 //go:build ruleguard
-// +build ruleguard
 
 // Package gorules implementing custom linting rules using ruleguard
 package gorules

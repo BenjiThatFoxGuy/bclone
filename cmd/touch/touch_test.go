@@ -1,8 +1,9 @@
-﻿package touch
+package touch
 
 import (
 	"context"
 	"testing"
+	"time"
 
 	_ "github.com/rclone/rclone/backend/local"
 	"github.com/rclone/rclone/fs"
@@ -19,6 +20,32 @@ func checkFile(t *testing.T, r fs.Fs, path string, content string) {
 	require.NoError(t, err)
 	file1 := fstest.NewItem(path, content, timeAtrFromFlags)
 	fstest.CheckItems(t, r, file1)
+}
+
+func TestParseTimeArgument(t *testing.T) {
+	oldLocalTime := localTime
+	localTime = false
+	t.Cleanup(func() {
+		localTime = oldLocalTime
+	})
+
+	for _, test := range []struct {
+		in   string
+		want time.Time
+	}{
+		{"171030", fstest.Time("2017-10-30T00:00:00Z")},
+		{"2024-05-01", fstest.Time("2024-05-01T00:00:00Z")},
+		{"2024-05-01T12:00:00", fstest.Time("2024-05-01T12:00:00Z")},
+		{"2024-05-01T12:00:00.123456789", fstest.Time("2024-05-01T12:00:00.123456789Z")},
+		{"2024-05-01T12:00:00Z", fstest.Time("2024-05-01T12:00:00Z")},
+		{"2024-05-01T12:00:00.123456789Z", fstest.Time("2024-05-01T12:00:00.123456789Z")},
+	} {
+		t.Run(test.in, func(t *testing.T) {
+			got, err := parseTimeArgument(test.in)
+			require.NoError(t, err)
+			require.Equal(t, test.want, got)
+		})
+	}
 }
 
 // TestMain drives the tests
@@ -149,4 +176,33 @@ func TestRecursiveTouchDirWithFiles(t *testing.T) {
 	recursive = false
 	require.NoError(t, err)
 	fstest.CheckListingWithPrecision(t, r.Fremote, []fstest.Item{file1, file2, file3}, []string{"a", "a/b", "a/b/c"}, fs.ModTimeNotSupported)
+}
+
+func TestTouchWithMetadata(t *testing.T) {
+	r := fstest.NewRun(t)
+	ctx := context.Background()
+	features := r.Fremote.Features()
+	if !features.UserMetadata {
+		t.Skip("Skipping metadata test; backend does not support user metadata")
+	}
+
+	ci := fs.GetConfig(ctx)
+	origMetadata := ci.Metadata
+	origMetadataSet := ci.MetadataSet
+	t.Cleanup(func() {
+		ci.Metadata = origMetadata
+		ci.MetadataSet = origMetadataSet
+	})
+
+	ci.Metadata = true
+	ci.MetadataSet = fs.Metadata{
+		"testkey": "testvalue",
+	}
+
+	err := Touch(ctx, r.Fremote, "metaFile")
+	require.NoError(t, err)
+
+	o, err := r.Fremote.NewObject(ctx, "metaFile")
+	require.NoError(t, err)
+	fstest.CheckEntryMetadata(ctx, t, r.Fremote, o, ci.MetadataSet)
 }

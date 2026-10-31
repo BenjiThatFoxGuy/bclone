@@ -1,4 +1,4 @@
-﻿package pkcs7
+package pkcs7
 
 import (
 	"fmt"

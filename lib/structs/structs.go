@@ -1,4 +1,4 @@
-﻿// Package structs is for manipulating structures with reflection
+// Package structs is for manipulating structures with reflection
 package structs
 
 import (

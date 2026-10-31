@@ -1,4 +1,4 @@
-﻿//go:build cmount && ((linux && cgo) || (darwin && cgo) || (freebsd && cgo) || windows)
+//go:build cmount && ((linux && cgo) || (darwin && cgo) || (freebsd && cgo) || (openbsd && cgo) || windows)
 
 // Package cmount implements a FUSE mounting system for rclone remotes.
 //
@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/rclone/rclone/cmd/mountlib"
@@ -58,12 +59,14 @@ func mountOptions(VFS *vfs.VFS, device string, mountpoint string, opt *mountlib.
 	} else {
 		options = append(options, "-o", "fsname="+device)
 		options = append(options, "-o", "subtype=rclone")
-		options = append(options, "-o", fmt.Sprintf("max_readahead=%d", opt.MaxReadAhead))
-		// This causes FUSE to supply O_TRUNC with the Open
-		// call which is more efficient for cmount.  However
-		// it does not work with cgofuse on Windows with
-		// WinFSP so cmount must work with or without it.
-		options = append(options, "-o", "atomic_o_trunc")
+		if runtime.GOOS != "openbsd" {
+			options = append(options, "-o", fmt.Sprintf("max_readahead=%d", opt.MaxReadAhead))
+			// This causes FUSE to supply O_TRUNC with the Open
+			// call which is more efficient for cmount.  However
+			// it does not work with cgofuse on Windows with
+			// WinFSP so cmount must work with or without it.
+			options = append(options, "-o", "atomic_o_trunc")
+		}
 		if opt.DaemonTimeout != 0 {
 			options = append(options, "-o", fmt.Sprintf("daemon_timeout=%d", int(time.Duration(opt.DaemonTimeout).Seconds())))
 		}
@@ -105,7 +108,7 @@ func mountOptions(VFS *vfs.VFS, device string, mountpoint string, opt *mountlib.
 func waitFor(fn func() bool) (ok bool) {
 	const totalWait = 10 * time.Second
 	const individualWait = 10 * time.Millisecond
-	for i := 0; i < int(totalWait/individualWait); i++ {
+	for range int(totalWait / individualWait) {
 		ok = fn()
 		if ok {
 			return ok
@@ -121,12 +124,12 @@ func waitFor(fn func() bool) (ok bool) {
 //
 // returns an error, and an error channel for the serve process to
 // report an error when fusermount is called.
-func mount(VFS *vfs.VFS, mountPath string, opt *mountlib.Options) (<-chan error, func() error, error) {
+func mount(VFS *vfs.VFS, mountPath string, opt *mountlib.Options) (<-chan error, func() error, string, error) {
 	// Get mountpoint using OS specific logic
 	f := VFS.Fs()
 	mountpoint, err := getMountpoint(f, mountPath, opt)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	fs.Debugf(nil, "Mounting on %q (%q)", mountpoint, opt.VolumeName)
 
@@ -149,7 +152,11 @@ func mount(VFS *vfs.VFS, mountPath string, opt *mountlib.Options) (<-chan error,
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				errChan <- fmt.Errorf("mount failed: %v", r)
+				err := fmt.Errorf("mount failed: %v", r)
+				if strings.Contains(strings.ToLower(err.Error()), "cannot find winfsp") {
+					err = fmt.Errorf("%w\nHint: Install WinFsp from https://winfsp.dev/rel/", err)
+				}
+				errChan <- err
 			}
 		}()
 		var err error
@@ -163,8 +170,6 @@ func mount(VFS *vfs.VFS, mountPath string, opt *mountlib.Options) (<-chan error,
 
 	// unmount
 	unmount := func() error {
-		// Shutdown the VFS
-		fsys.VFS.Shutdown()
 		var umountOK bool
 		if fsys.destroyed.Load() != 0 {
 			fs.Debugf(nil, "Not calling host.Unmount as mount already Destroyed")
@@ -198,7 +203,7 @@ func mount(VFS *vfs.VFS, mountPath string, opt *mountlib.Options) (<-chan error,
 	select {
 	case err := <-errChan:
 		err = fmt.Errorf("mount stopped before calling Init: %w", err)
-		return nil, nil, err
+		return nil, nil, "", err
 	case <-fsys.ready:
 	}
 
@@ -213,5 +218,5 @@ func mount(VFS *vfs.VFS, mountPath string, opt *mountlib.Options) (<-chan error,
 		}
 	}
 
-	return errChan, unmount, nil
+	return errChan, unmount, mountpoint, nil
 }

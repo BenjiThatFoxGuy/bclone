@@ -1,4 +1,4 @@
-﻿// Package box provides an interface to the Box
+// Package box provides an interface to the Box
 // object storage system.
 package box
 
@@ -27,7 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/rclone/rclone/backend/box/api"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
@@ -37,6 +37,7 @@ import (
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/fs/list"
 	"github.com/rclone/rclone/lib/dircache"
 	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/env"
@@ -44,6 +45,7 @@ import (
 	"github.com/rclone/rclone/lib/oauthutil"
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/random"
+	"github.com/rclone/rclone/lib/readers"
 	"github.com/rclone/rclone/lib/rest"
 	"github.com/youmark/pkcs8"
 )
@@ -75,7 +77,10 @@ var (
 )
 
 type boxCustomClaims struct {
-	jwt.StandardClaims
+	jwt.RegisteredClaims
+	// Audience overrides RegisteredClaims.Audience so it is sent as
+	// a single string rather than an array of strings
+	Audience   string `json:"aud,omitempty"`
 	BoxSubType string `json:"box_sub_type,omitempty"`
 }
 
@@ -86,13 +91,11 @@ func init() {
 		Description: "Box",
 		NewFs:       NewFs,
 		Config: func(ctx context.Context, name string, m configmap.Mapper, config fs.ConfigIn) (*fs.ConfigOut, error) {
-			jsonFile, ok := m.Get("box_config_file")
-			boxSubType, boxSubTypeOk := m.Get("box_sub_type")
 			boxAccessToken, boxAccessTokenOk := m.Get("access_token")
 			var err error
 			// If using box config.json, use JWT auth
-			if ok && boxSubTypeOk && jsonFile != "" && boxSubType != "" {
-				err = refreshJWTToken(ctx, jsonFile, boxSubType, name, m)
+			if usesJWTAuth(m) {
+				err = refreshJWTToken(ctx, name, m)
 				if err != nil {
 					return nil, fmt.Errorf("failed to configure token with jwt authentication: %w", err)
 				}
@@ -113,6 +116,11 @@ func init() {
 		}, {
 			Name: "box_config_file",
 			Help: "Box App config.json location\n\nLeave blank normally." + env.ShellExpandHelp,
+		}, {
+			Name:      "config_credentials",
+			Help:      "Box App config.json contents.\n\nLeave blank normally.",
+			Hide:      fs.OptionHideBoth,
+			Sensitive: true,
 		}, {
 			Name:      "access_token",
 			Help:      "Box App Primary Access Token\n\nLeave blank normally.",
@@ -183,9 +191,17 @@ See: https://developer.box.com/guides/authentication/jwt/as-user/
 	})
 }
 
-func refreshJWTToken(ctx context.Context, jsonFile string, boxSubType string, name string, m configmap.Mapper) error {
-	jsonFile = env.ShellExpand(jsonFile)
-	boxConfig, err := getBoxConfig(jsonFile)
+func usesJWTAuth(m configmap.Mapper) bool {
+	jsonFile, okFile := m.Get("box_config_file")
+	jsonFileCredentials, okCredentials := m.Get("config_credentials")
+	boxSubType, boxSubTypeOk := m.Get("box_sub_type")
+	return (okFile || okCredentials) && boxSubTypeOk && (jsonFile != "" || jsonFileCredentials != "") && boxSubType != ""
+}
+
+func refreshJWTToken(ctx context.Context, name string, m configmap.Mapper) error {
+	boxSubType, _ := m.Get("box_sub_type")
+
+	boxConfig, err := getBoxConfig(m)
 	if err != nil {
 		return fmt.Errorf("get box config: %w", err)
 	}
@@ -204,12 +220,19 @@ func refreshJWTToken(ctx context.Context, jsonFile string, boxSubType string, na
 	return err
 }
 
-func getBoxConfig(configFile string) (boxConfig *api.ConfigJSON, err error) {
-	file, err := os.ReadFile(configFile)
-	if err != nil {
-		return nil, fmt.Errorf("box: failed to read Box config: %w", err)
+func getBoxConfig(m configmap.Mapper) (boxConfig *api.ConfigJSON, err error) {
+	configFileCredentials, _ := m.Get("config_credentials")
+	configFileBytes := []byte(configFileCredentials)
+
+	if configFileCredentials == "" {
+		configFile, _ := m.Get("box_config_file")
+		configFileBytes, err = os.ReadFile(env.ShellExpand(configFile))
+		if err != nil {
+			return nil, fmt.Errorf("box: failed to read Box config: %w", err)
+		}
 	}
-	err = json.Unmarshal(file, &boxConfig)
+
+	err = json.Unmarshal(configFileBytes, &boxConfig)
 	if err != nil {
 		return nil, fmt.Errorf("box: failed to parse Box config: %w", err)
 	}
@@ -223,15 +246,13 @@ func getClaims(boxConfig *api.ConfigJSON, boxSubType string) (claims *boxCustomC
 	}
 
 	claims = &boxCustomClaims{
-		//lint:ignore SA1019 since we need to use jwt.StandardClaims even if deprecated in jwt-go v4 until a more permanent solution is ready in time before jwt-go v5 where it is removed entirely
-		//nolint:staticcheck // Don't include staticcheck when running golangci-lint to avoid SA1019
-		StandardClaims: jwt.StandardClaims{
-			Id:        val,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        val,
 			Issuer:    boxConfig.BoxAppSettings.ClientID,
 			Subject:   boxConfig.EnterpriseID,
-			Audience:  tokenURL,
-			ExpiresAt: time.Now().Add(time.Second * 45).Unix(),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Second * 45)),
 		},
+		Audience:   tokenURL,
 		BoxSubType: boxSubType,
 	}
 	return claims, nil
@@ -484,15 +505,12 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		f.srv.SetHeader("as-user", f.opt.Impersonate)
 	}
 
-	jsonFile, ok := m.Get("box_config_file")
-	boxSubType, boxSubTypeOk := m.Get("box_sub_type")
-
 	if ts != nil {
 		// If using box config.json and JWT, renewing should just refresh the token and
 		// should do so whether there are uploads pending or not.
-		if ok && boxSubTypeOk && jsonFile != "" && boxSubType != "" {
+		if usesJWTAuth(m) {
 			f.tokenRenewer = oauthutil.NewRenew(f.String(), ts, func() error {
-				err := refreshJWTToken(ctx, jsonFile, boxSubType, name, m)
+				err := refreshJWTToken(ctx, name, m)
 				return err
 			})
 			f.tokenRenewer.Start()
@@ -705,9 +723,27 @@ OUTER:
 // This should return ErrDirNotFound if the directory isn't
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
+	return list.WithListP(ctx, dir, f)
+}
+
+// ListP lists the objects and directories of the Fs starting
+// from dir non recursively into out.
+//
+// dir should be "" to start from the root, and should not
+// have trailing slashes.
+//
+// This should return ErrDirNotFound if the directory isn't
+// found.
+//
+// It should call callback for each tranche of entries read.
+// These need not be returned in any particular order.  If
+// callback returns an error then the listing will stop
+// immediately.
+func (f *Fs) ListP(ctx context.Context, dir string, callback fs.ListRCallback) error {
+	list := list.NewHelper(callback)
 	directoryID, err := f.dirCache.FindDir(ctx, dir, false)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var iErr error
 	_, err = f.listAll(ctx, directoryID, false, false, true, func(info *api.Item) bool {
@@ -717,14 +753,22 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 			f.dirCache.Put(remote, info.ID)
 			d := fs.NewDir(remote, info.ModTime()).SetID(info.ID)
 			// FIXME more info from dir?
-			entries = append(entries, d)
+			err = list.Add(d)
+			if err != nil {
+				iErr = err
+				return true
+			}
 		} else if info.Type == api.ItemTypeFile {
 			o, err := f.newObjectWithInfo(ctx, remote, info)
 			if err != nil {
 				iErr = err
 				return true
 			}
-			entries = append(entries, o)
+			err = list.Add(o)
+			if err != nil {
+				iErr = err
+				return true
+			}
 		}
 
 		// Cache some metadata for this Item to help us process events later
@@ -740,12 +784,12 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 		return false
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if iErr != nil {
-		return nil, iErr
+		return iErr
 	}
-	return entries, nil
+	return list.Flush()
 }
 
 // Creates from the parameters passed in a half finished Object which
@@ -1418,7 +1462,7 @@ func (f *Fs) changeNotifyRunner(ctx context.Context, notifyFunc func(string, fs.
 					// Item in the cache has the same or newer SequenceID than
 					// this event. Ignore this event, it must be old.
 					f.itemMetaCacheMu.Unlock()
-					fs.Debugf(f, "%s ignored due to old SequenceID (%q)", eventDetails, itemMeta.SequenceID)
+					fs.Debugf(f, "%s ignored due to old SequenceID (%d)", eventDetails, itemMeta.SequenceID)
 					continue
 				}
 
@@ -1649,7 +1693,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 // upload does a single non-multipart upload
 //
 // This is recommended for less than 50 MiB of content
-func (o *Object) upload(ctx context.Context, in io.Reader, leaf, directoryID string, modTime time.Time, options ...fs.OpenOption) (err error) {
+func (o *Object) upload(ctx context.Context, in io.Reader, leaf, directoryID string, size int64, modTime time.Time, options ...fs.OpenOption) (err error) {
 	upload := api.UploadFile{
 		Name:              o.fs.opt.Enc.FromStandardName(leaf),
 		ContentModifiedAt: api.Time(modTime),
@@ -1661,9 +1705,10 @@ func (o *Object) upload(ctx context.Context, in io.Reader, leaf, directoryID str
 
 	var resp *http.Response
 	var result api.FolderItems
+	counter := readers.NewCountingReader(in)
 	opts := rest.Opts{
 		Method:                "POST",
-		Body:                  in,
+		Body:                  counter,
 		MultipartMetadataName: "attributes",
 		MultipartContentName:  "contents",
 		MultipartFileName:     upload.Name,
@@ -1682,6 +1727,11 @@ func (o *Object) upload(ctx context.Context, in io.Reader, leaf, directoryID str
 	})
 	if err != nil {
 		return err
+	}
+	// Check the source supplied the number of bytes it declared
+	// otherwise a truncated file would be stored as a good upload.
+	if size >= 0 && int64(counter.BytesRead()) != size {
+		return fmt.Errorf("expected %d bytes in input, but got %d: %w", size, counter.BytesRead(), io.ErrUnexpectedEOF)
 	}
 	if result.TotalCount != 1 || len(result.Entries) != 1 {
 		return fmt.Errorf("failed to upload %v - not sure why", o)
@@ -1712,7 +1762,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 	// Upload with simple or multipart
 	if size <= int64(o.fs.opt.UploadCutoff) {
-		err = o.upload(ctx, in, leaf, directoryID, modTime, options...)
+		err = o.upload(ctx, in, leaf, directoryID, size, modTime, options...)
 	} else {
 		err = o.uploadMultipart(ctx, in, leaf, directoryID, size, modTime, options...)
 	}
@@ -1741,6 +1791,7 @@ var (
 	_ fs.DirCacheFlusher = (*Fs)(nil)
 	_ fs.PublicLinker    = (*Fs)(nil)
 	_ fs.CleanUpper      = (*Fs)(nil)
+	_ fs.ListPer         = (*Fs)(nil)
 	_ fs.Shutdowner      = (*Fs)(nil)
 	_ fs.Object          = (*Object)(nil)
 	_ fs.IDer            = (*Object)(nil)

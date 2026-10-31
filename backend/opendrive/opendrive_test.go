@@ -1,4 +1,4 @@
-﻿// Test Opendrive filesystem interface
+// Test Opendrive filesystem interface
 package opendrive_test
 
 import (
@@ -13,5 +13,8 @@ func TestIntegration(t *testing.T) {
 	fstests.Run(t, &fstests.Opt{
 		RemoteName: "TestOpenDrive:",
 		NilObject:  (*opendrive.Object)(nil),
+		ChunkedUpload: fstests.ChunkedUploadConfig{
+			MinChunkSize: 1,
+		},
 	})
 }

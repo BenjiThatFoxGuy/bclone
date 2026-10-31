@@ -1,4 +1,4 @@
-﻿package pcloud
+package pcloud
 
 import (
 	"bytes"

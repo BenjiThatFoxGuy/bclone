@@ -20,7 +20,8 @@ docker daemon and runs the corresponding code when necessary.
 Docker plugins can run as a managed plugin under control of the docker daemon
 or as an independent native service. For testing, you can just run it directly
 from the command line, for example:
-```
+
+```console
 sudo rclone serve docker --base-dir /tmp/rclone-volumes --socket-addr localhost:8787 -vv
 ```
 
@@ -49,6 +50,55 @@ All mount and VFS options are submitted by the docker daemon via API, but
 you can also provide defaults on the command line as well as set path to the
 config file and cache directory or adjust logging verbosity.
 
+# Restarting or upgrading the plugin
+
+When the plugin is restarted (for example with
+`docker plugin disable rclone && docker plugin enable rclone`, when upgrading
+the plugin, or when the host reboots) rclone reads its `docker-plugin.state`
+file and restores the volumes and mounts that were active before. The plugin
+starts serving its socket straight away and re-establishes the mounts in the
+background, so a slow or unreachable remote no longer prevents the plugin from
+coming back up.
+
+However, restarting the plugin necessarily stops and restarts the process that
+serves the FUSE mounts. Any container that is **already running** and holding
+files open on an rclone volume keeps a handle to the old, now dead mount, so
+those handles start returning `transport endpoint is not connected` until the
+container is restarted. This is a limitation of replacing the process behind a
+live FUSE mount and cannot be avoided by rclone - the plugin itself recovers and
+newly started containers work normally, but:
+
+- **Restart any containers that were using rclone volumes** after you restart
+  or upgrade the plugin (e.g. `docker restart <container>`), or stop them before
+  and start them after.
+- Databases and other applications that keep files open continuously (Grafana,
+  Prometheus, SQLite-backed apps, etc.) are the most affected and should always
+  be restarted.
+
+# Security
+
+The plugin API accepts a `remote` (aka `fs`) option on volume creation, and this
+is parsed exactly like an rclone connection string. Connection strings are
+trusted configuration: they may carry inline backend options, and some backends
+use those options to run local commands (for example the `sftp` backend's `ssh`
+option spawns an external binary). Anyone who can send requests to the plugin
+socket can therefore make rclone run arbitrary commands as the user running
+`rclone serve docker` (typically root). Treat access to the socket as equivalent
+to that level of access and only expose it to trusted callers.
+
+When listening on the default unix socket at `/run/docker/plugins/rclone.sock`
+rclone creates it with mode `0660` owned by `root` and the group given by
+`--socket-gid` (the process GID by default), so only root and members of that
+group - normally just the docker daemon - can reach it. Do not loosen these
+permissions or hand the group to untrusted users.
+
+When using `--socket-addr` to listen on a TCP socket there is no authentication
+and the API is reachable by anyone who can open the port, so bind it to a
+loopback or otherwise trusted address and protect it with a firewall. Note that
+holding Docker daemon access is already equivalent to root on the host, so a
+caller able to issue `docker volume create` does not gain anything new from
+this; the concern is exposing the socket more widely than the daemon itself.
+
 ## VFS - Virtual File System
 
 This command uses the VFS layer. This adapts the cloud storage objects
@@ -70,8 +120,10 @@ directory should be considered up to date and not refreshed from the
 backend. Changes made through the VFS will appear immediately or
 invalidate the cache.
 
+```text
     --dir-cache-time duration   Time to cache directory entries for (default 5m0s)
     --poll-interval duration    Time to wait between polling for changes. Must be smaller than dir-cache-time. Only on supported remotes. Set to 0 to disable (default 1m0s)
+```
 
 However, changes made directly on the cloud storage by the web
 interface or a different copy of rclone will only be picked up once
@@ -83,16 +135,22 @@ You can send a `SIGHUP` signal to rclone for it to flush all
 directory caches, regardless of how old they are.  Assuming only one
 rclone instance is running, you can reset the cache like this:
 
-    kill -SIGHUP $(pidof rclone)
+```console
+kill -SIGHUP $(pidof rclone)
+```
 
 If you configure rclone with a [remote control](/rc) then you can use
 rclone rc to flush the whole directory cache:
 
-    rclone rc vfs/forget
+```console
+rclone rc vfs/forget
+```
 
 Or individual files or directories:
 
-    rclone rc vfs/forget file=path/to/file dir=path/to/dir
+```console
+rclone rc vfs/forget file=path/to/file dir=path/to/dir
+```
 
 ## VFS File Buffering
 
@@ -123,6 +181,7 @@ write simultaneously to a file.  See below for more details.
 Note that the VFS cache is separate from the cache backend and you may
 find that you need one or the other or both.
 
+```text
     --cache-dir string                     Directory rclone will use for caching.
     --vfs-cache-mode CacheMode             Cache mode off|minimal|writes|full (default off)
     --vfs-cache-max-age duration           Max time since last access of objects in the cache (default 1h0m0s)
@@ -130,6 +189,7 @@ find that you need one or the other or both.
     --vfs-cache-min-free-space SizeSuffix  Target minimum free space on the disk containing the cache (default off)
     --vfs-cache-poll-interval duration     Interval to poll the cache for stale objects (default 1m0s)
     --vfs-write-back duration              Time to writeback files after last use when using cache (default 5s)
+```
 
 If run with `-vv` rclone will print the location of the file cache.  The
 files are stored in the user cache file area which is OS dependent but
@@ -177,13 +237,13 @@ directly to the remote without caching anything on disk.
 
 This will mean some operations are not possible
 
-  * Files can't be opened for both read AND write
-  * Files opened for write can't be seeked
-  * Existing files opened for write must have O_TRUNC set
-  * Files open for read with O_TRUNC will be opened write only
-  * Files open for write only will behave as if O_TRUNC was supplied
-  * Open modes O_APPEND, O_TRUNC are ignored
-  * If an upload fails it can't be retried
+- Files can't be opened for both read AND write
+- Files opened for write can't be seeked
+- Existing files opened for write must have O_TRUNC set
+- Files open for read with O_TRUNC will be opened write only
+- Files open for write only will behave as if O_TRUNC was supplied
+- Open modes O_APPEND, O_TRUNC are ignored
+- If an upload fails it can't be retried
 
 ### --vfs-cache-mode minimal
 
@@ -193,10 +253,10 @@ write will be a lot more compatible, but uses the minimal disk space.
 
 These operations are not possible
 
-  * Files opened for write only can't be seeked
-  * Existing files opened for write must have O_TRUNC set
-  * Files opened for write only will ignore O_APPEND, O_TRUNC
-  * If an upload fails it can't be retried
+- Files opened for write only can't be seeked
+- Existing files opened for write must have O_TRUNC set
+- Files opened for write only will ignore O_APPEND, O_TRUNC
+- If an upload fails it can't be retried
 
 ### --vfs-cache-mode writes
 
@@ -279,9 +339,11 @@ read, at the cost of an increased number of requests.
 
 These flags control the chunking:
 
+```text
     --vfs-read-chunk-size SizeSuffix        Read the source objects in chunks (default 128M)
     --vfs-read-chunk-size-limit SizeSuffix  Max chunk doubling size (default off)
     --vfs-read-chunk-streams int            The number of parallel streams to read at once
+```
 
 The chunking behaves differently depending on the `--vfs-read-chunk-streams` parameter.
 
@@ -295,9 +357,9 @@ value is "off", which is the default, the limit is disabled and the chunk size
 will grow indefinitely.
 
 With `--vfs-read-chunk-size 100M` and `--vfs-read-chunk-size-limit 0`
-the following parts will be downloaded: 0-100M, 100M-200M, 200M-300M, 300M-400M and so on.
-When `--vfs-read-chunk-size-limit 500M` is specified, the result would be
-0-100M, 100M-300M, 300M-700M, 700M-1200M, 1200M-1700M and so on.
+the following parts will be downloaded: 0-100M, 100M-200M, 200M-300M, 300M-400M
+and so on. When `--vfs-read-chunk-size-limit 500M` is specified, the result would
+be 0-100M, 100M-300M, 300M-700M, 700M-1200M, 1200M-1700M and so on.
 
 Setting `--vfs-read-chunk-size` to `0` or "off" disables chunked reading.
 
@@ -335,32 +397,41 @@ In particular S3 and Swift benefit hugely from the `--no-modtime` flag
 (or use `--use-server-modtime` for a slightly different effect) as each
 read of the modification time takes a transaction.
 
+```text
     --no-checksum     Don't compare checksums on up/download.
     --no-modtime      Don't read/write the modification time (can speed things up).
     --no-seek         Don't allow seeking in files.
     --read-only       Only allow read-only access.
+```
 
 Sometimes rclone is delivered reads or writes out of order. Rather
 than seeking rclone will wait a short time for the in sequence read or
 write to come in. These flags only come into effect when not using an
 on disk cache file.
 
+```text
     --vfs-read-wait duration   Time to wait for in-sequence read before seeking (default 20ms)
     --vfs-write-wait duration  Time to wait for in-sequence write before giving error (default 1s)
+```
 
 When using VFS write caching (`--vfs-cache-mode` with value writes or full),
-the global flag `--transfers` can be set to adjust the number of parallel uploads of
-modified files from the cache (the related global flag `--checkers` has no effect on the VFS).
+the global flag `--transfers` can be set to adjust the number of parallel uploads
+of modified files from the cache (the related global flag `--checkers` has no
+effect on the VFS).
 
+```text
     --transfers int  Number of file transfers to run in parallel (default 4)
+```
 
 ## Symlinks
 
 By default the VFS does not support symlinks. However this may be
 enabled with either of the following flags:
 
+```text
     --links      Translate symlinks to/from regular files with a '.rclonelink' extension.
     --vfs-links  Translate symlinks to/from regular files with a '.rclonelink' extension for the VFS
+```
 
 As most cloud storage systems do not support symlinks directly, rclone
 stores the symlink as a normal file with a special extension. So a
@@ -372,7 +443,8 @@ Note that `--links` enables symlink translation globally in rclone -
 this includes any backend which supports the concept (for example the
 local backend). `--vfs-links` just enables it for the VFS layer.
 
-This scheme is compatible with that used by the [local backend with the --local-links flag](/local/#symlinks-junction-points).
+This scheme is compatible with that used by the
+[local backend with the --local-links flag](/local/#symlinks-junction-points).
 
 The `--vfs-links` flag has been designed for `rclone mount`, `rclone
 nfsmount` and `rclone serve nfs`.
@@ -382,7 +454,7 @@ It hasn't been tested with the other `rclone serve` commands yet.
 A limitation of the current implementation is that it expects the
 caller to resolve sub-symlinks. For example given this directory tree
 
-```
+```text
 .
 ├── dir
 │   └── file.txt
@@ -460,7 +532,9 @@ sync`.
 This flag allows you to manually set the statistics about the filing system.
 It can be useful when those statistics cannot be read correctly automatically.
 
+```text
     --vfs-disk-space-total-size    Manually set the total disk space size (example: 256G, default: -1)
+```
 
 ## Alternate report of used bytes
 
@@ -471,7 +545,7 @@ With this flag set, instead of relying on the backend to report this
 information, rclone will scan the whole remote similar to `rclone size`
 and compute the total used space itself.
 
-_WARNING._ Contrary to `rclone size`, this flag ignores filters so that the
+**WARNING**: Contrary to `rclone size`, this flag ignores filters so that the
 result is accurate. However, this is very inefficient and may cost lots of API
 calls resulting in extra charges. Use it as a last resort and only with caching.
 
@@ -489,7 +563,7 @@ Note that some backends won't create metadata unless you pass in the
 For example, using `rclone mount` with `--metadata --vfs-metadata-extension .metadata`
 we get
 
-```
+```console
 $ ls -l /mnt/
 total 1048577
 -rw-rw-r-- 1 user user 1073741824 Mar  3 16:03 1G
@@ -514,8 +588,6 @@ If the file has no metadata it will be returned as `{}` and if there
 is an error reading the metadata the error will be returned as
 `{"error":"error string"}`.
 
-
-
 ```
 rclone serve docker [flags]
 ```
@@ -523,6 +595,7 @@ rclone serve docker [flags]
 ## Options
 
 ```
+      --allow-idmap                            Allow id-mapped mounts (Linux 6.12+, mount2 only)
       --allow-non-empty                        Allow mounting over a non-empty directory (not supported on Windows)
       --allow-other                            Allow access to other users (not supported on Windows)
       --allow-root                             Allow access to root user (not supported on Windows)
@@ -569,6 +642,7 @@ rclone serve docker [flags]
       --vfs-case-insensitive                   If a file name not found, find a case insensitive match
       --vfs-disk-space-total-size SizeSuffix   Specify the total space of disk (default off)
       --vfs-fast-fingerprint                   Use fast (less accurate) fingerprints for change detection
+      --vfs-handle-caching Duration            Time to keep file handle and downloaders alive after last close (default 5s)
       --vfs-links                              Translate symlinks to/from regular files with a '.rclonelink' extension for the VFS
       --vfs-metadata-extension string          Set the extension to read metadata from
       --vfs-read-ahead SizeSuffix              Extra read ahead over --buffer-size when using cache-mode full
@@ -591,13 +665,14 @@ See the [global flags page](/flags/) for global options not listed here.
 
 Flags for filtering directory listings
 
-```
+```text
       --delete-excluded                     Delete files on dest excluded from sync
       --exclude stringArray                 Exclude files matching pattern
       --exclude-from stringArray            Read file exclude patterns from file (use - to read from stdin)
       --exclude-if-present stringArray      Exclude directories if filename is present
       --files-from stringArray              Read list of source-file names from file (use - to read from stdin)
       --files-from-raw stringArray          Read list of source-file names from file without any processing of lines (use - to read from stdin)
+      --files-from0 stringArray             Read list of source-file names from file using NUL as separator (use - to read from stdin)
   -f, --filter stringArray                  Add a file filtering rule
       --filter-from stringArray             Read file filtering patterns from a file (use - to read from stdin)
       --hash-filter string                  Partition filenames by hash k/n or randomly @/n
@@ -619,5 +694,10 @@ Flags for filtering directory listings
 
 ## See Also
 
+<!-- markdownlint-capture -->
+<!-- markdownlint-disable ul-style line-length -->
+
 * [rclone serve](/commands/rclone_serve/)	 - Serve a remote over a protocol.
 
+
+<!-- markdownlint-restore -->

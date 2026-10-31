@@ -1,4 +1,4 @@
-﻿package mrhash_test
+package mrhash_test
 
 import (
 	"encoding/hex"

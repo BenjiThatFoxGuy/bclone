@@ -111,6 +111,7 @@ backends:
  - backend:  "cloudinary"
    remote:   "TestCloudinary:"
    fastlist: false
+   listretries: 5
    ignore:
      # fs/operations
      - TestCheckSum
@@ -119,11 +120,26 @@ backends:
      - TestReadFile
      - TestCopyURL
      - TestMoveFileWithIgnoreExisting
+     - TestMoveFileImmutable
      - TestCopyFileCompareDest
+     - TestLsWithFilesFrom
+     - TestIndex
+     - TestIndexFilter
+     - TestIndexRules
+     - TestIndexMaxDepth
+     - TestIndexLinkIndex
+     - TestIndexDirTime
+     - TestIndexTemplate
+     - TestIndexChanged
+     - TestIndexChangedFiles
+     # fs/sync
+     - TestSyncCompareDest
      #vfs
      - TestFileSetModTime/cache=off,open=false,write=false
      - TestFileSetModTime/cache=off,open=true,write=false
      - TestRWFileHandleWriteNoWrite
+     - TestRWFileTruncateShrinkUncached/writes
+     - TestRWFileTruncateShrinkUncached/full
    ignoretests:
      - cmd/gitannex
  - backend:  "combine"
@@ -132,6 +148,9 @@ backends:
  ## begin compress
  - backend:  "compress"
    remote:   "TestCompress:"
+   fastlist: false
+ - backend:  "compress"
+   remote:   "TestCompressZstd:"
    fastlist: false
  # - backend:  "compress"
  #   remote:   "TestCompressSwift:"
@@ -154,6 +173,16 @@ backends:
  - backend:  "dropbox"
    remote:   "TestDropbox:"
    fastlist: false
+   ignore:
+     # The bisync normalization test relies on uploading distinct NFC and NFD
+     # versions of the same filename and on having modtime updates that don't
+     # require a delete+re-upload. Dropbox normalizes unicode server-side
+     # (NFD -> NFC) and can't set modtime in place, so the test takes a
+     # different code path that produces a different log without functional
+     # difference - the file state ends up correct either way.
+     - TestBisyncRemoteLocal/normalization
+     - TestBisyncLocalRemote/normalization
+     - TestBisyncRemoteRemote/normalization
  # - backend:  "filefabric"
  #   remote:   "TestFileFabric:"
  #   fastlist: false
@@ -161,9 +190,17 @@ backends:
  - backend:  "gofile"
    remote:   "TestGoFile:"
    fastlist: true
+ - backend: "filen"
+   remote:   "TestFilen:"
+   fastlist: false
  - backend:  "filescom"
    remote:   "TestFilesCom:"
    fastlist: false
+   ignore:
+     # Files.com rejects the replacements for ".", "..", "/" and "\"
+     - TestIntegration/FsMkdir/FsEncoding/dot
+     - TestIntegration/FsMkdir/FsEncoding/dot_dot
+     - TestIntegration/FsMkdir/FsEncoding/punctuation
    ignoretests:
      - cmd/bisync
  - backend:  "googlecloudstorage"
@@ -188,15 +225,18 @@ backends:
    fastlist: false
    ignore:
      - TestIntegration/FsMkdir/FsPutZeroLength
+     - TestRWFileHandleWriteNoWrite
    ignoretests:
      - cmd/bisync
  - backend:  "internetarchive"
-   remote:   "TestIA:rclone-integration-test"
+   remote:   "TestIA:rclone-integration-test-2"
    fastlist: true
+   short:    true
    tests:
      - backend
    ignore:
      - TestIntegration/FsMkdir/FsEncoding
+     - TestIntegration/FsMkdir/FsPutFiles/FsCopy/Metadata
    extratime: 2.0
  - backend:  "jottacloud"
    remote:   "TestJottacloud:"
@@ -234,7 +274,6 @@ backends:
    remote:   "TestS3Rclone:"
    fastlist: true
    ignoretests:
-     - cmd/bisync
      - cmd/gitannex
  - backend:  "s3"
    remote:   "TestS3Minio:"
@@ -247,13 +286,6 @@ backends:
      - TestIntegration/FsMkdir/FsEncoding/punctuation
      - TestIntegration/FsMkdir/FsEncoding/trailing_LF
      - TestIntegration/FsMkdir/FsEncoding/trailing_VT
- - backend:  "s3"
-   remote:   "TestS3MinioEdge:"
-   fastlist: true
-   ignore:
-     - TestIntegration/FsMkdir/FsPutFiles/SetTier
-   ignoretests:
-     - cmd/gitannex
  - backend:  "s3"
    remote:   "TestS3Wasabi:"
    fastlist: true
@@ -279,7 +311,10 @@ backends:
      - TestIntegration/FsMkdir/FsPutFiles/Internal/Versions/VersionAt/AfterDelete/NewObject
      - TestIntegration/FsMkdir/FsPutFiles/Internal/Versions/VersionAt/AfterTwo/List
      - TestIntegration/FsMkdir/FsPutFiles/Internal/Versions/VersionAt/AfterTwo/NewObject
+     # GCS can't store CR or LF in object names
      - TestBisyncRemoteRemote/extended_filenames
+     - TestBisyncRemoteLocal/extended_filenames
+     - TestBisyncLocalRemote/extended_filenames
  # Disabled due to excessive rate limiting at DO which cause the tests never to pass
  # This hits the rate limit as documented here: https://www.digitalocean.com/docs/spaces/#limits
  # 2 COPYs per 5 minutes on any individual object in a Space
@@ -417,14 +452,21 @@ backends:
    fastlist: true
    ignore:
      # It just isn't possible to preserve the existing file with azure blob
-     # and make sure we don't leak uncomitted blocks.
+     # and make sure we don't leak uncommitted blocks.
      - TestMultithreadCopyAbort
  - backend:  "azureblob"
    remote:   "TestAzureBlob,directory_markers:"
    fastlist: true
    ignore:
      # It just isn't possible to preserve the existing file with azure blob
-     # and make sure we don't leak uncomitted blocks.
+     # and make sure we don't leak uncommitted blocks.
+     - TestMultithreadCopyAbort
+ - backend:  "azureblob"
+   remote:   "TestAzureBlobHierarchical:"
+   fastlist: true
+   ignore:
+     # It just isn't possible to preserve the existing file with azure blob
+     # and make sure we don't leak uncommitted blocks.
      - TestMultithreadCopyAbort
  - backend:  "azurefiles"
    remote:   "TestAzureFiles:"
@@ -438,6 +480,9 @@ backends:
     #  fs/operations
      - TestCheckSum
      - TestHashSums/Md5
+    # PikPak declares MD5 but never returns it for uploaded files, so
+    # corruption can't be detected by comparing hashes.
+     - TestRcatSizeChecksum/Corrupted
     #  fs/sync
      - TestSyncWithTrackRenames
     # integration
@@ -473,17 +518,17 @@ backends:
    ignoretests:
      - cmd/bisync
      - cmd/gitannex
- - backend:  "webdav"
-   remote:   "TestWebdavInfiniteScale:"
-   ignore:
-     - TestIntegration/FsMkdir/FsEncoding/punctuation
-     - TestIntegration/FsMkdir/FsEncoding/invalid_UTF-8
-   env:
-      - RCLONE_NO_CHECK_CERTIFICATE=true
-   fastlist: false
-   ignoretests:
-     - cmd/bisync
-     - cmd/gitannex
+ # - backend:  "webdav"
+ #   remote:   "TestWebdavInfiniteScale:"
+ #   ignore:
+ #     - TestIntegration/FsMkdir/FsEncoding/punctuation
+ #     - TestIntegration/FsMkdir/FsEncoding/invalid_UTF-8
+ #   env:
+ #      - RCLONE_NO_CHECK_CERTIFICATE=true
+ #   fastlist: false
+ #   ignoretests:
+ #     - cmd/bisync
+ #     - cmd/gitannex
  - backend:  "webdav"
    remote:   "TestWebdavRclone:"
    ignore:
@@ -508,6 +553,17 @@ backends:
  - backend:  "opendrive"
    remote:   "TestOpenDrive:"
    fastlist: false
+   ignore:
+     # downloading the HTML listings is refused with 403 Forbidden
+     - TestIndex
+     - TestIndexDelete
+     - TestIndexFilter
+     - TestIndexRules
+     - TestIndexMaxDepth
+     - TestIndexLinkIndex
+     - TestIndexChanged
+     - TestIndexChangedDelete
+     - TestIndexChangedFiles
    ignoretests:
      - cmd/bisync
  - backend:  "union"
@@ -516,6 +572,19 @@ backends:
  - backend:  "koofr"
    remote:   "TestKoofr:"
    fastlist: false
+   ignore:
+     # downloading the HTML listings is refused with FileBlocked
+     - TestIndex
+     - TestIndexDelete
+     - TestIndexFilter
+     - TestIndexRules
+     - TestIndexMaxDepth
+     - TestIndexLinkIndex
+     - TestIndexChanged
+     - TestIndexChangedDelete
+     - TestIndexChangedFiles
+     # downloading the large zip is refused with FileBlocked
+     - TestZipLargeFiles
  # - backend:  "koofr"
  #   remote:   "TestDigiStorage:"
  #   fastlist: false
@@ -526,8 +595,12 @@ backends:
      - TestIntegration/FsMkdir/FsEncoding/invalid_UTF-8
      - TestRWFileHandleWriteNoWrite
      - TestCaseInsensitiveMoveFile
+     - TestCaseInsensitiveMoveWithoutServerSideMove # Linkbox renames "File1" uploaded next to "File1-rclone-move-xxx" to name(1)
      - TestFixCase
      - TestListDirSorted        # Can't upload files starting with . - FIXME fix with encoding
+     - TestListDirSortedFn      # Can't upload files starting with . - FIXME fix with encoding
+     - TestTransform/suffix     # Linkbox lower cases file extensions
+     - TestTransform/truncate   # Linkbox renames a file whose name prefixes another to name(1)
      - TestSyncOverlapWithFilter # Can't upload files starting with . - FIXME fix with encoding
    ignoretests:
      - cmd/bisync
@@ -566,13 +639,6 @@ backends:
      - TestApplyTransforms
    ignoretests:
      - cmd/bisync
- - backend:  "seafile"
-   remote:   "TestSeafileV6:"
-   fastlist: false
-   ignore:
-     - TestIntegration/FsMkdir/FsPutFiles/FsDirMove
-   ignoretests:
-     - cmd/gitannex
  - backend:  "seafile"
    remote:   "TestSeafile:"
    fastlist: true
@@ -621,22 +687,10 @@ backends:
      - TestSyncUTFNorm
    ignoretests:
      - cmd/gitannex
- # - backend: "uptobox"
- #   remote: "TestUptobox:"
- #   fastlist: false
- #   ignore:
- #     - TestRWFileHandleWriteNoWrite
  - backend: "oracleobjectstorage"
    remote: "TestOracleObjectStorage:"
    fastlist: true
    ignore:
-     - TestIntegration/FsMkdir/FsEncoding/control_chars
-     - TestIntegration/FsMkdir/FsEncoding/leading_CR
-     - TestIntegration/FsMkdir/FsEncoding/leading_LF
-     - TestIntegration/FsMkdir/FsEncoding/trailing_CR
-     - TestIntegration/FsMkdir/FsEncoding/trailing_LF
-     - TestIntegration/FsMkdir/FsEncoding/leading_HT
-     - TestIntegration/FsMkdir/FsPutFiles/FsPutStream/0
    ignoretests:
      - cmd/bisync
      - cmd/gitannex
@@ -659,3 +713,61 @@ backends:
    ignoretests:
      - cmd/bisync
      - cmd/gitannex
+ - backend: "huaweidrive"
+   remote: "TestHuaweiDrive:"
+   fastlist: true
+   listretries: 5
+ - backend: "shade"
+   remote: "TestShade:"
+   fastlist: false
+
+ - backend: "archive"
+   remote: "TestArchive:"
+   fastlist: false
+   ignoretests:
+     - cmd/bisync
+     - cmd/gitannex
+   ignore:
+     # These are caused by the archive backend returning the underlying objects
+     # with the parent backend having a different precision.
+     - TestServerSideCopyOverSelf
+     - TestServerSideMoveOverSelf
+     # The underlying objects returned aren't recognised as being at the
+     # destination path, so the move copies the file onto itself.
+     - TestMoveOntoItself
+ - backend: "internxt"
+   remote: "TestInternxt:"
+   fastlist: false
+   extratime: 2.0
+   listretries: 5
+   ignore:
+     - TestRWFileHandleWriteNoWrite
+     # Listings lag behind directory renames and deletes for longer
+     # than the list retries allow.
+     - TestDirRename
+     - TestDirRenameParentEntries
+ - backend:  "dosya"
+   remote:   "TestDosya:"
+   # Every upload is a metadata round trip of several seconds regardless
+   # of size, so fs/sync (TestTransform alone is 11 x ~3.5 min) needs
+   # well over the default 1h budget.
+   extratime: 3.0
+   ignore:
+     - TestRWFileHandleWriteNoWrite
+ - backend:  "drime"
+   remote:   "TestDrime:"
+   ignoretests:
+     # The TestBisyncRemoteLocal/check_access_filters tests fail due to duplicated objects
+     - cmd/bisync
+   fastlist: false
+   extratime: 2.0
+   listretries: 5
+ - backend: "kdrive"
+   remote: "TestKdrive:"
+   ignore:
+     # The bisync normalization test fails as the kDrive server normalizes file names to NFC
+     - TestBisyncRemoteRemote/normalization
+     # the dates used in TestIndexChangedDirTime are far away in the future, this isn't handled by kdrive
+     - TestIndexChangedDirTime
+   fastlist: true
+   extratime: 2.0

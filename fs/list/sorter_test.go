@@ -1,9 +1,13 @@
-﻿package list
+package list
 
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -228,6 +232,82 @@ func TestSorterExt(t *testing.T) {
 		t.Run(fmt.Sprintf("cutoff=%d,N=%d,wantExtSort=%v,keyFn=%v", test.cutoff, test.N, test.wantExtSort, test.keyFn != nil), func(t *testing.T) {
 			testSorterExt(t, test.cutoff, test.N, test.wantExtSort, test.keyFn)
 		})
+	}
+}
+
+// Test that the Sorter returns an error instead of panicking when
+// temp file creation fails (e.g. due to permissions or apparmor).
+// See: https://github.com/rclone/rclone/issues/9244
+func TestSorterExtTempFileError(t *testing.T) {
+	ctx := context.Background()
+	ctx, ci := fs.AddConfig(ctx)
+	ci.ListCutoff = 1 // force ext sort on first Add
+
+	callback := func(entries fs.DirEntries) error {
+		return nil
+	}
+	ls, err := NewSorter(ctx, nil, callback, nil)
+	require.NoError(t, err)
+	defer ls.CleanUp()
+
+	// Override tempDir to a path where os.MkdirAll will fail,
+	// simulating apparmor or permission denial.
+	if runtime.GOOS == "windows" {
+		// On Windows, create a regular file and use a child path.
+		// os.MkdirAll fails because an intermediate component is a file.
+		// Windows stat returns ERROR_PATH_NOT_FOUND (treated as
+		// IsNotExist) so the extsort library won't fall back to a
+		// default directory.
+		blocker := filepath.Join(t.TempDir(), "notadir")
+		require.NoError(t, os.WriteFile(blocker, []byte("x"), 0644))
+		ls.tempDir = filepath.Join(blocker, "sub")
+	} else {
+		// On Unix, create a read-only parent directory. stat on the
+		// child returns ENOENT so the extsort library won't fall
+		// back, but os.MkdirAll fails with EACCES.
+		parent := filepath.Join(t.TempDir(), "roparent")
+		require.NoError(t, os.Mkdir(parent, 0o755))
+		require.NoError(t, os.Chmod(parent, 0o555))
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+		ls.tempDir = filepath.Join(parent, "child")
+	}
+
+	// Add more entries than fit in one ext sort chunk so temp files
+	// are needed. Before the fix this would panic with nil pointer
+	// dereference.
+	entries := make(fs.DirEntries, 64*1024)
+	for i := range entries {
+		entries[i] = mockobject.Object(fmt.Sprintf("%08d", i))
+	}
+	err = ls.Add(entries)
+	if err == nil {
+		err = ls.Send()
+	}
+	require.Error(t, err)
+}
+
+// Test that Send returns the error from the ext sort when the ext
+// sort closes its output and error channels before Send reads them.
+func TestSorterExtSendError(t *testing.T) {
+	ctx := context.Background()
+	callback := func(entries fs.DirEntries) error {
+		return nil
+	}
+	// select picks randomly between ready channels so try many times
+	for range 100 {
+		ls, err := NewSorter(ctx, nil, callback, nil)
+		require.NoError(t, err)
+		outputChan := make(chan string)
+		close(outputChan)
+		errChan := make(chan error, 1)
+		errChan <- errors.New("sort failed")
+		close(errChan)
+		ls.extSort = true
+		ls.inputChan = make(chan string)
+		ls.outputChan = outputChan
+		ls.errChan = errChan
+		require.EqualError(t, ls.Send(), "sort failed")
+		ls.CleanUp()
 	}
 }
 

@@ -1,4 +1,4 @@
-﻿// Package filterflags implements command line flags to set up a filter
+// Package filterflags implements command line flags to set up a filter
 package filterflags
 
 import (

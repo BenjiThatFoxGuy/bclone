@@ -1,4 +1,4 @@
-﻿// Package asyncreader provides an asynchronous reader which reads
+// Package asyncreader provides an asynchronous reader which reads
 // independently of write
 package asyncreader
 

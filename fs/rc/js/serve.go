@@ -1,4 +1,4 @@
-﻿//go:build none
+//go:build none
 
 package main
 

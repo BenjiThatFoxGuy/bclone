@@ -4,7 +4,7 @@ description: "Rclone docs for Microsoft Azure Blob Storage"
 versionIntroduced: "v1.38"
 ---
 
-# {{< icon "fab fa-windows" >}} Microsoft Azure Blob Storage
+# Microsoft Azure Blob Storage
 
 Paths are specified as `remote:container` (or `remote:` for the `lsd`
 command.)  You may put subdirectories in too, e.g.
@@ -15,7 +15,7 @@ command.)  You may put subdirectories in too, e.g.
 Here is an example of making a Microsoft Azure Blob Storage
 configuration.  For a remote called `remote`.  First run:
 
-```sh
+```console
 rclone config
 ```
 
@@ -57,26 +57,26 @@ y/e/d> y
 
 See all containers
 
-```sh
+```console
 rclone lsd remote:
 ```
 
 Make a new container
 
-```sh
+```console
 rclone mkdir remote:container
 ```
 
 List the contents of a container
 
-```sh
+```console
 rclone ls remote:container
 ```
 
 Sync `/home/local/directory` to the remote container, deleting any excess
 files in the container.
 
-```sh
+```console
 rclone sync --interactive /home/local/directory remote:container
 ```
 
@@ -102,6 +102,44 @@ flag. Note that rclone can't set `LastModified`, so using the
 MD5 hashes are stored with blobs. However blobs that were uploaded in
 chunks only have an MD5 if the source remote was capable of MD5
 hashes, e.g. the local disk.
+
+### Metadata and tags
+
+Rclone can map arbitrary metadata to Azure Blob headers, user metadata, and tags
+when `--metadata` is enabled (or when using `--metadata-set` / `--metadata-mapper`).
+
+- Headers: Set these keys in metadata to map to the corresponding blob headers:
+  - `cache-control`, `content-disposition`, `content-encoding`, `content-language`, `content-type`.
+- User metadata: Any other non-reserved keys are written as user metadata
+  (keys are normalized to lowercase). Keys starting with `x-ms-` are reserved and
+  are not stored as user metadata.
+- Tags: Provide `x-ms-tags` as a comma-separated list of `key=value` pairs, e.g.
+  `x-ms-tags=env=dev,team=sync`. These are applied as blob tags on upload and on
+  server-side copies. Whitespace around keys/values is ignored.
+- Modtime override: Provide `mtime` in RFC3339/RFC3339Nano format to override the
+  stored modtime persisted in user metadata. If `mtime` cannot be parsed, rclone
+  logs a debug message and ignores the override.
+
+Notes:
+- Rclone ignores reserved `x-ms-*` keys (except `x-ms-tags`) for user metadata.
+
+### Hierarchical namespace
+
+Storage accounts with hierarchical namespace enabled (Azure Data Lake
+Storage Gen2) have real directories. On these accounts rclone supports
+empty directories, creating them with `rclone mkdir` and removing
+them with `rclone rmdir`, whatever the `--azureblob-directory-markers`
+setting.
+
+Note that deleting the last file in a directory leaves the directory
+behind. Use `rclone rmdirs` or `--delete-empty-src-dirs` to remove
+empty directories.
+
+Rclone reads whether the storage account has a hierarchical namespace
+when it first uses the remote and saves it as the `hns` option in the
+config file. Set `--azureblob-hns` to override this.
+
+Blob tags (`x-ms-tags` metadata) aren't supported on these accounts.
 
 ### Performance
 
@@ -212,25 +250,25 @@ Credentials created with the `az` tool can be picked up using `env_auth`.
 
 For example if you were to login with a service principal like this:
 
-```sh
+```console
 az login --service-principal -u XXX -p XXX --tenant XXX
 ```
 
 Then you could access rclone resources like this:
 
-```sh
+```console
 rclone lsf :azureblob,env_auth,account=ACCOUNT:CONTAINER
 ```
 
 Or
 
-```sh
+```console
 rclone lsf --azureblob-env-auth --azureblob-account=ACCOUNT :azureblob:CONTAINER
 ```
 
 Which is analogous to using the `az` tool:
 
-```sh
+```console
 az storage blob list --container-name CONTAINER --account-name ACCOUNT --auth-mode login
 ```
 
@@ -253,14 +291,14 @@ explorer in the Azure portal.
 If you use a container level SAS URL, rclone operations are permitted
 only on a particular container, e.g.
 
-```sh
+```console
 rclone ls azureblob:container
 ```
 
 You can also list the single container from the root. This will only
 show the container specified by the SAS URL.
 
-```sh
+```console
 $ rclone lsd azureblob:
 container/
 ```
@@ -268,7 +306,7 @@ container/
 Note that you can't see or access any other containers - this will
 fail
 
-```sh
+```console
 rclone ls azureblob:othercontainer
 ```
 
@@ -334,24 +372,24 @@ be explicitly specified using exactly one of the `msi_object_id`,
 `msi_client_id`, or `msi_mi_res_id` parameters.
 
 If none of `msi_object_id`, `msi_client_id`, or `msi_mi_res_id` is
-set, this is is equivalent to using `env_auth`.
+set, this is equivalent to using `env_auth`.
 
-#### Fedrated Identity Credentials
+#### Federated Identity Credentials
 
-If these variables are set, rclone will authenticate with fedrated identity.
+If these variables are set, rclone will authenticate with federated identity.
 
-- `tenant_id`: tenant_id to authenticate in storage
+- `tenant`: tenant ID of the storage
 - `client_id`: client ID of the application the user will authenticate to storage
 - `msi_client_id`: managed identity client ID of the application the user will
   authenticate to
 
 By default "api://AzureADTokenExchange" is used as scope for token retrieval
 over MSI. This token is then exchanged for actual storage token using
-'tenant_id' and 'client_id'.
+'tenant' and 'client_id'.
 
 #### Azure CLI tool `az` {#use_az}
 
-Set to use the [Azure CLI tool `az`](https://learn.microsoft.com/en-us/cli/azure/)
+If `use_az` is set, use [Azure CLI tool `az`](https://learn.microsoft.com/en-us/cli/azure/)
 as the sole means of authentication.
 
 Setting this can be useful if you wish to use the `az` CLI on a host with
@@ -364,11 +402,11 @@ Don't set `env_auth` at the same time.
 If you want to access resources with public anonymous access then set
 `account` only. You can do this without making an rclone config:
 
-```sh
+```console
 rclone lsf :azureblob,account=ACCOUNT:CONTAINER
 ```
 
-{{< rem autogenerated options start" - DO NOT EDIT - instead edit fs.RegInfo in backend/azureblob/azureblob.go then run make backenddocs" >}}
+<!-- autogenerated options start - DO NOT EDIT - instead edit fs.RegInfo in backend/azureblob/azureblob.go and run make backenddocs to verify --> <!-- markdownlint-disable-line line-length -->
 ### Standard options
 
 Here are the Standard options specific to azureblob (Microsoft Azure Blob Storage).
@@ -428,6 +466,20 @@ Properties:
 
 - Config:      sas_url
 - Env Var:     RCLONE_AZUREBLOB_SAS_URL
+- Type:        string
+- Required:    false
+
+#### --azureblob-connection-string
+
+Storage Connection String.
+
+Connection string for the storage. Leave blank if using other auth methods.
+
+
+Properties:
+
+- Config:      connection_string
+- Env Var:     RCLONE_AZUREBLOB_CONNECTION_STRING
 - Type:        string
 - Required:    false
 
@@ -811,6 +863,22 @@ Properties:
 - Type:        int
 - Default:     512
 
+#### --azureblob-copy-total-concurrency
+
+Global concurrency limit for multipart copy chunks.
+
+This limits the total number of multipart copy chunks running at once
+across all files.
+
+Set to 0 to disable this limiter.
+
+Properties:
+
+- Config:      copy_total_concurrency
+- Env Var:     RCLONE_AZUREBLOB_COPY_TOTAL_CONCURRENCY
+- Type:        int
+- Default:     0
+
 #### --azureblob-use-copy-blob
 
 Whether to use the Copy Blob API when copying to the same storage account.
@@ -913,28 +981,6 @@ Properties:
 - Type:        bool
 - Default:     false
 
-#### --azureblob-memory-pool-flush-time
-
-How often internal memory buffer pools will be flushed. (no longer used)
-
-Properties:
-
-- Config:      memory_pool_flush_time
-- Env Var:     RCLONE_AZUREBLOB_MEMORY_POOL_FLUSH_TIME
-- Type:        Duration
-- Default:     1m0s
-
-#### --azureblob-memory-pool-use-mmap
-
-Whether to use mmap buffers in internal memory pool. (no longer used)
-
-Properties:
-
-- Config:      memory_pool_use_mmap
-- Env Var:     RCLONE_AZUREBLOB_MEMORY_POOL_USE_MMAP
-- Type:        bool
-- Default:     false
-
 #### --azureblob-encoding
 
 The encoding for the backend.
@@ -959,13 +1005,13 @@ Properties:
 - Type:        string
 - Required:    false
 - Examples:
-    - ""
-        - The container and its blobs can be accessed only with an authorized request.
-        - It's a default value.
-    - "blob"
-        - Blob data within this container can be read via anonymous request.
-    - "container"
-        - Allow full public read access for container and blob data.
+  - ""
+    - The container and its blobs can be accessed only with an authorized request.
+    - It's a default value.
+  - "blob"
+    - Blob data within this container can be read via anonymous request.
+  - "container"
+    - Allow full public read access for container and blob data.
 
 #### --azureblob-directory-markers
 
@@ -1022,12 +1068,31 @@ Properties:
 - Type:        string
 - Required:    false
 - Choices:
-    - ""
-        - By default, the delete operation fails if a blob has snapshots
-    - "include"
-        - Specify 'include' to remove the root blob and all its snapshots
-    - "only"
-        - Specify 'only' to remove only the snapshots but keep the root blob.
+  - ""
+    - By default, the delete operation fails if a blob has snapshots
+  - "include"
+    - Specify 'include' to remove the root blob and all its snapshots
+  - "only"
+    - Specify 'only' to remove only the snapshots but keep the root blob.
+
+#### --azureblob-decompress
+
+If set this will decompress gzip encoded objects.
+
+It is possible to upload objects to Azure Blob Storage with "Content-Encoding: gzip"
+set. Normally rclone will download these files as compressed objects.
+
+If this flag is set then rclone will decompress these files with
+"Content-Encoding: gzip" as they are received. This means that rclone
+can't check the size and hash but the file contents will be decompressed.
+
+
+Properties:
+
+- Config:      decompress
+- Env Var:     RCLONE_AZUREBLOB_DECOMPRESS
+- Type:        bool
+- Default:     false
 
 #### --azureblob-description
 
@@ -1040,11 +1105,29 @@ Properties:
 - Type:        string
 - Required:    false
 
-{{< rem autogenerated options stop >}}
+### Metadata
+
+User metadata is stored as x-ms-meta- keys. Azure metadata keys are case insensitive and are always returned in lower case.
+
+Here are the possible system metadata items for the azureblob backend.
+
+| Name | Help | Type | Example | Read Only |
+|------|------|------|---------|-----------|
+| cache-control | Cache-Control header | string | no-cache | N |
+| content-disposition | Content-Disposition header | string | inline | N |
+| content-encoding | Content-Encoding header | string | gzip | N |
+| content-language | Content-Language header | string | en-US | N |
+| content-type | Content-Type header | string | text/plain | N |
+| mtime | Time of last modification, read from rclone metadata | RFC 3339 | 2006-01-02T15:04:05.999999999Z07:00 | N |
+| tier | Tier of the object | string | Hot | **Y** |
+
+See the [metadata](/docs/#metadata) docs for more info.
+
+<!-- autogenerated options stop -->
 
 ### Custom upload headers
 
-You can set custom upload headers with the `--header-upload` flag. 
+You can set custom upload headers with the `--header-upload` flag.
 
 - Cache-Control
 - Content-Disposition
@@ -1053,19 +1136,21 @@ You can set custom upload headers with the `--header-upload` flag.
 - Content-Type
 - X-MS-Tags
 
-Eg `--header-upload "Content-Type: text/potato"` or `--header-upload "X-MS-Tags: foo=bar"`
+Eg `--header-upload "Content-Type: text/potato"` or
+`--header-upload "X-MS-Tags: foo=bar"`.
 
 ## Limitations
 
 MD5 sums are only uploaded with chunked files if the source has an MD5
 sum.  This will always be the case for a local to azure copy.
 
-`rclone about` is not supported by the Microsoft Azure Blob storage backend. Backends without
-this capability cannot determine free space for an rclone mount or
-use policy `mfs` (most free space) as a member of an rclone union
+`rclone about` is not supported by the Microsoft Azure Blob storage backend.
+Backends without this capability cannot determine free space for an rclone
+mount or use policy `mfs` (most free space) as a member of an rclone union
 remote.
 
-See [List of backends that do not support rclone about](https://rclone.org/overview/#optional-features) and [rclone about](https://rclone.org/commands/rclone_about/)
+See [List of backends that do not support rclone about](https://rclone.org/overview/#optional-features)
+and [rclone about](https://rclone.org/commands/rclone_about/).
 
 ## Azure Storage Emulator Support
 

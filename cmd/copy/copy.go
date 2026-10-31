@@ -1,4 +1,4 @@
-﻿// Package copy provides the copy command.
+// Package copy provides the copy command.
 package copy
 
 import (

@@ -1,4 +1,4 @@
-﻿package fs
+package fs
 
 import (
 	"context"
@@ -7,7 +7,14 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
+
+	"github.com/rclone/rclone/lib/caller"
 )
+
+// logger represents the slog logging facility and should be overridden by
+// the fs/log handling code.
+var logger = slog.Default()
 
 // LogLevel describes rclone's logs.  These are a subset of the syslog log levels.
 type LogLevel = Enum[logLevelChoices]
@@ -133,35 +140,69 @@ func LogLevelToSlog(level LogLevel) slog.Level {
 	return slogLevel
 }
 
-func logSlog(level LogLevel, text string, attrs []any) {
-	slog.Log(context.Background(), LogLevelToSlog(level), text, attrs...)
+func logSlog(ctx context.Context, level LogLevel, text string, attrs []any) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// ctx is passed to the log handler which uses it to attribute
+	// the log to the rc job and stats group it was made by.
+	logger.Log(ctx, LogLevelToSlog(level), text, attrs...)
 }
 
-func logSlogWithObject(level LogLevel, o any, text string, attrs []any) {
+func logSlogWithObject(ctx context.Context, level LogLevel, o any, text string, attrs []any) {
 	if o != nil {
+		var object string
+		switch o.(type) {
+		case fmt.Stringer, string:
+			object = fmt.Sprint(o)
+		default:
+			// Don't render the fields of arbitrary objects as they
+			// may contain sensitive data such as credentials.
+			object = fmt.Sprintf("%T", o)
+		}
 		attrs = slices.Concat(attrs, []any{
-			"object", fmt.Sprintf("%+v", o),
+			"object", object,
 			"objectType", fmt.Sprintf("%T", o),
 		})
 	}
-	logSlog(level, text, attrs)
+	logSlog(ctx, level, text, attrs)
 }
 
-// LogPrint produces a log string from the arguments passed in
-func LogPrint(level LogLevel, o any, text string) {
-	logSlogWithObject(level, o, text, nil)
-}
-
-// LogPrintf produces a log string from the arguments passed in
-func LogPrintf(level LogLevel, o any, text string, args ...any) {
-	text = fmt.Sprintf(text, args...)
+func logPrintf(ctx context.Context, level LogLevel, o any, text string, args ...any) {
+	// Note that text isn't assigned to here so go vet can see this
+	// is a printf wrapper and check the format strings of the
+	// callers.
+	msg := fmt.Sprintf(text, args...)
 	var fields []any
 	for _, arg := range args {
 		if item, ok := arg.(LogValueItem); ok {
 			fields = append(fields, item.key, item.value)
 		}
 	}
-	logSlogWithObject(level, o, text, fields)
+	logSlogWithObject(ctx, level, o, msg, fields)
+}
+
+func logLevelPrintf(ctx context.Context, level LogLevel, o any, text string, args ...any) {
+	if GetConfig(ctx).LogLevel >= level {
+		logPrintf(ctx, level, o, text, args...)
+	}
+}
+
+// LogPrint produces a log string from the arguments passed in
+func LogPrint(level LogLevel, o any, text string) {
+	logSlogWithObject(context.Background(), level, o, text, nil)
+}
+
+// LogPrintf produces a log string from the arguments passed in
+func LogPrintf(level LogLevel, o any, text string, args ...any) {
+	logPrintf(context.Background(), level, o, text, args...)
+}
+
+// LogPrintfCtx produces a log string from the arguments passed in.
+//
+// The log is attributed to the stats group in ctx, if any.
+func LogPrintfCtx(ctx context.Context, level LogLevel, o any, text string, args ...any) {
+	logPrintf(ctx, level, o, text, args...)
 }
 
 // LogLevelPrint writes logs at the given level
@@ -173,9 +214,7 @@ func LogLevelPrint(level LogLevel, o any, text string) {
 
 // LogLevelPrintf writes logs at the given level
 func LogLevelPrintf(level LogLevel, o any, text string, args ...any) {
-	if GetConfig(context.TODO()).LogLevel >= level {
-		LogPrintf(level, o, text, args...)
-	}
+	logLevelPrintf(context.Background(), level, o, text, args...)
 }
 
 // Panic writes alert log output for this Object or Fs and calls panic().
@@ -196,12 +235,42 @@ func Panicf(o any, text string, args ...any) {
 	panic(fmt.Sprintf(text, args...))
 }
 
+// Panic if this called from an rc job.
+//
+// This means fatal errors get turned into panics which get caught by
+// the rc job handler so they don't crash rclone.
+//
+// This detects if we are being called from an rc Job by looking for
+// Job.run in the call stack.
+//
+// Ideally we would do this by passing a context about but we don't
+// have one with the logging calls yet.
+//
+// This is tested in fs/rc/internal_job_test.go in TestInternalFatal.
+func panicIfRcJob(o any, text string, args []any) {
+	if !caller.Present("(*Job).run") {
+		return
+	}
+	var errTxt strings.Builder
+	_, _ = errTxt.WriteString("fatal error: ")
+	if o != nil {
+		_, _ = fmt.Fprintf(&errTxt, "%v: ", o)
+	}
+	if args != nil {
+		_, _ = fmt.Fprintf(&errTxt, text, args...)
+	} else {
+		_, _ = errTxt.WriteString(text)
+	}
+	panic(errTxt.String())
+}
+
 // Fatal writes critical log output for this Object or Fs and calls os.Exit(1).
 // It should always be seen by the user.
 func Fatal(o any, text string) {
 	if GetConfig(context.TODO()).LogLevel >= LogLevelCritical {
 		LogPrint(LogLevelCritical, o, text)
 	}
+	panicIfRcJob(o, text, nil)
 	os.Exit(1)
 }
 
@@ -211,6 +280,7 @@ func Fatalf(o any, text string, args ...any) {
 	if GetConfig(context.TODO()).LogLevel >= LogLevelCritical {
 		LogPrintf(LogLevelCritical, o, text, args...)
 	}
+	panicIfRcJob(o, text, args)
 	os.Exit(1)
 }
 
@@ -224,6 +294,11 @@ func Error(o any, text string) {
 // should always be seen by the user.
 func Errorf(o any, text string, args ...any) {
 	LogLevelPrintf(LogLevelError, o, text, args...)
+}
+
+// ErrorfCtx is Errorf with the log attributed to the stats group in ctx, if any.
+func ErrorfCtx(ctx context.Context, o any, text string, args ...any) {
+	logLevelPrintf(ctx, LogLevelError, o, text, args...)
 }
 
 // Print writes log output for this Object or Fs, same as Logf.
@@ -254,6 +329,11 @@ func Logf(o any, text string, args ...any) {
 	LogLevelPrintf(LogLevelNotice, o, text, args...)
 }
 
+// LogfCtx is Logf with the log attributed to the stats group in ctx, if any.
+func LogfCtx(ctx context.Context, o any, text string, args ...any) {
+	logLevelPrintf(ctx, LogLevelNotice, o, text, args...)
+}
+
 // Infoc writes info on transfers for this Object or Fs.  Use this
 // level for logging transfers, deletions and things which should
 // appear with the -v flag.
@@ -269,6 +349,11 @@ func Infof(o any, text string, args ...any) {
 	LogLevelPrintf(LogLevelInfo, o, text, args...)
 }
 
+// InfofCtx is Infof with the log attributed to the stats group in ctx, if any.
+func InfofCtx(ctx context.Context, o any, text string, args ...any) {
+	logLevelPrintf(ctx, LogLevelInfo, o, text, args...)
+}
+
 // Debug writes debugging output for this Object or Fs.  Use this for
 // debug only.  The user must have to specify -vv to see this.
 func Debug(o any, text string) {
@@ -279,6 +364,11 @@ func Debug(o any, text string) {
 // debug only.  The user must have to specify -vv to see this.
 func Debugf(o any, text string, args ...any) {
 	LogLevelPrintf(LogLevelDebug, o, text, args...)
+}
+
+// DebugfCtx is Debugf with the log attributed to the stats group in ctx, if any.
+func DebugfCtx(ctx context.Context, o any, text string, args ...any) {
+	logLevelPrintf(ctx, LogLevelDebug, o, text, args...)
 }
 
 // LogDirName returns an object for the logger, logging a root
@@ -302,4 +392,9 @@ func PrettyPrint(in any, label string, level LogLevel) {
 		return
 	}
 	LogPrintf(level, label, "\n%s\n", string(inBytes))
+}
+
+// SetLogger overrides the slog logger using the specified handler
+func SetLogger(h slog.Handler) {
+	logger = slog.New(h)
 }

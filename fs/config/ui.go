@@ -1,17 +1,20 @@
-﻿// Textual user interface parts of the config system
+// Textual user interface parts of the config system
 
 package config
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/peterh/liner"
@@ -22,11 +25,26 @@ import (
 	"github.com/rclone/rclone/fs/driveletter"
 	"github.com/rclone/rclone/fs/fspath"
 	"github.com/rclone/rclone/lib/terminal"
-	"golang.org/x/text/unicode/norm"
+)
+
+var (
+	stdinBufOnce sync.Once
+	stdinBuf     *bufio.Reader
 )
 
 // ReadLine reads an unlimited length line from stdin with a prompt.
 var ReadLine = func(prompt string) string {
+	if !terminal.IsTerminal(int(os.Stdout.Fd())) {
+		stdinBufOnce.Do(func() {
+			stdinBuf = bufio.NewReader(os.Stdin)
+		})
+		line, err := stdinBuf.ReadString('\n')
+		if err != nil && (line == "" || err != io.EOF) {
+			fs.Fatalf(nil, "Failed to read line: %v", err)
+		}
+		return strings.TrimSpace(line)
+	}
+
 	l := liner.NewLiner()
 	defer func() {
 		_ = l.Close()
@@ -149,6 +167,8 @@ func Choose(what string, kind string, choices, help []string, defaultValue strin
 					number = fmt.Sprintf("%2d", pos)
 				}
 				fmt.Printf("%s %c %s\n", number, sep, line)
+				// reapply color for second line
+				terminal.WriteString(attributes[(pos-1)%len(attributes)])
 			}
 		}
 		terminal.WriteString(terminal.Reset)
@@ -423,7 +443,7 @@ func backendConfig(ctx context.Context, name string, m configmap.Mapper, ri *fs.
 				out.Option.Examples[1].Value == "false" &&
 				out.Option.Exclusive {
 				// Use Confirm for Yes/No questions as it has a nicer interface=
-				fmt.Println(out.Option.Help)
+				fmt.Println(renderHelpForTerminal(out.Option.Help))
 				in.Result = fmt.Sprint(Confirm(Default))
 			} else {
 				value := ChooseOption(out.Option, name)
@@ -465,12 +485,26 @@ func RemoteConfig(ctx context.Context, name string) error {
 	return PostConfig(ctx, name, m, ri)
 }
 
+// rootRelativeMarkdownLink matches a markdown link with a root-relative
+// target, e.g. [encoding section in the overview](/overview/#encoding).
+var rootRelativeMarkdownLink = regexp.MustCompile(`\[([^\]]+)\]\((/[^)]*)\)`)
+
+// renderHelpForTerminal makes an option's help string readable on the
+// terminal. The same help text is also used to generate the website
+// documentation, where markdown links with root-relative targets resolve
+// correctly. On the terminal those links are confusing, so rewrite them to
+// "text (https://rclone.org/path)" using rclone.org as the implied root.
+func renderHelpForTerminal(help string) string {
+	return rootRelativeMarkdownLink.ReplaceAllString(help, "$1 (https://rclone.org$2)")
+}
+
 // ChooseOption asks the user to choose an option
 func ChooseOption(o *fs.Option, name string) string {
 	fmt.Printf("Option %s.\n", o.Name)
 	if o.Help != "" {
 		// Show help string without empty lines.
 		help := strings.ReplaceAll(strings.TrimSpace(o.Help), "\n\n", "\n")
+		help = renderHelpForTerminal(help)
 		fmt.Println(help)
 	}
 
@@ -745,7 +779,11 @@ func suppressConfirm(ctx context.Context) context.Context {
 	return newCtx
 }
 
-// checkPassword normalises and validates the password
+// checkPassword validates the password.
+//
+// It deliberately does not alter the password (e.g. by Unicode
+// normalization) - the password is stored verbatim so that what the
+// user typed is exactly what is obscured and later sent to the backend.
 func checkPassword(password string) (string, error) {
 	if !utf8.ValidString(password) {
 		return "", errors.New("password contains invalid utf8 characters")
@@ -756,8 +794,6 @@ func checkPassword(password string) (string, error) {
 	if len(password) != len(trimmedPassword) {
 		_, _ = fmt.Fprintln(os.Stderr, "Your password contains leading/trailing whitespace - in previous versions of rclone this was stripped")
 	}
-	// Normalize to reduce weird variations.
-	password = norm.NFKC.String(password)
 	if len(password) == 0 || len(trimmedPassword) == 0 {
 		return "", errors.New("no characters in password")
 	}

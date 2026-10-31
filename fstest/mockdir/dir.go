@@ -1,4 +1,4 @@
-﻿// Package mockdir makes a mock fs.Directory object
+// Package mockdir makes a mock fs.Directory object
 package mockdir
 
 import (

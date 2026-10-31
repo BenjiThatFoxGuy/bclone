@@ -1,4 +1,4 @@
-﻿// Package swift provides an interface to the Swift object storage system
+// Package swift provides an interface to the Swift object storage system
 package swift
 
 import (
@@ -54,7 +54,7 @@ var SharedOptions = []fs.Option{{
 	Name: "chunk_size",
 	Help: strings.ReplaceAll(`Above this size files will be chunked.
 
-Above this size files will be chunked into a a |`+segmentsContainerSuffix+`| container
+Above this size files will be chunked into a |`+segmentsContainerSuffix+`| container
 or a |`+segmentsDirectory+`| directory. (See the |use_segments_container| option
 for more info). Default for this is 5 GiB which is its maximum value, which
 means only files above this size will be chunked.
@@ -943,6 +943,20 @@ func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 		used = container.Bytes
 		objects = container.Count
 		total = container.QuotaBytes
+
+		if f.opt.UseSegmentsContainer.Value {
+			err = f.pacer.Call(func() (bool, error) {
+				segmentsContainer := f.rootContainer + segmentsContainerSuffix
+				container, _, err = f.c.Container(ctx, segmentsContainer)
+				return shouldRetry(ctx, err)
+			})
+			if err != nil && err != swift.ContainerNotFound {
+				return nil, fmt.Errorf("container info failed: %w", err)
+			}
+			if err == nil {
+				used += container.Bytes
+			}
+		}
 	} else {
 		var containers []swift.Container
 		err = f.pacer.Call(func() (bool, error) {
@@ -1316,7 +1330,7 @@ func (o *Object) isDynamicLargeObject(ctx context.Context) (bool, error) {
 	return o.hasHeader(ctx, "X-Object-Manifest")
 }
 
-// isStaticLargeObjectFile checks for the X-Static-Large-Object header
+// isStaticLargeObject checks for the X-Static-Large-Object header
 func (o *Object) isStaticLargeObject(ctx context.Context) (bool, error) {
 	if o.fs.opt.NoLargeObjects {
 		return false, nil

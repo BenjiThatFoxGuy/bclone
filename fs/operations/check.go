@@ -1,4 +1,4 @@
-﻿package operations
+package operations
 
 import (
 	"bufio"
@@ -83,7 +83,7 @@ func (c *checkMarch) DstOnly(dst fs.DirEntry) (recurse bool) {
 			return false
 		}
 		err := fmt.Errorf("file not in %v", c.opt.Fsrc)
-		fs.Errorf(dst, "%v", err)
+		fs.ErrorfCtx(c.ctx, dst, "%v", err)
 		_ = fs.CountError(c.ctx, err)
 		c.differences.Add(1)
 		c.srcFilesMissing.Add(1)
@@ -105,7 +105,7 @@ func (c *checkMarch) SrcOnly(src fs.DirEntry) (recurse bool) {
 	switch src.(type) {
 	case fs.Object:
 		err := fmt.Errorf("file not in %v", c.opt.Fdst)
-		fs.Errorf(src, "%v", err)
+		fs.ErrorfCtx(c.ctx, src, "%v", err)
 		_ = fs.CountError(c.ctx, err)
 		c.differences.Add(1)
 		c.dstFilesMissing.Add(1)
@@ -128,7 +128,7 @@ func (c *checkMarch) checkIdentical(ctx context.Context, dst, src fs.Object) (di
 	}()
 	if sizeDiffers(ctx, src, dst) {
 		err = fmt.Errorf("sizes differ")
-		fs.Errorf(src, "%v", err)
+		fs.ErrorfCtx(ctx, src, "%v", err)
 		return true, false, nil
 	}
 	if ci.SizeOnly {
@@ -155,7 +155,7 @@ func (c *checkMarch) Match(ctx context.Context, dst, src fs.DirEntry) (recurse b
 				}()
 				differ, noHash, err := c.checkIdentical(ctx, dstX, srcX)
 				if err != nil {
-					fs.Errorf(src, "%v", err)
+					fs.ErrorfCtx(ctx, src, "%v", err)
 					_ = fs.CountError(ctx, err)
 					c.report(src, c.opt.Error, '!')
 				} else if differ {
@@ -169,15 +169,15 @@ func (c *checkMarch) Match(ctx context.Context, dst, src fs.DirEntry) (recurse b
 					c.report(src, c.opt.Match, '=')
 					if noHash {
 						c.noHashes.Add(1)
-						fs.Debugf(dstX, "OK - could not check hash")
+						fs.DebugfCtx(ctx, dstX, "OK - could not check hash")
 					} else {
-						fs.Debugf(dstX, "OK")
+						fs.DebugfCtx(ctx, dstX, "OK")
 					}
 				}
 			}()
 		} else {
 			err := fmt.Errorf("is file on %v but directory on %v", c.opt.Fsrc, c.opt.Fdst)
-			fs.Errorf(src, "%v", err)
+			fs.ErrorfCtx(ctx, src, "%v", err)
 			_ = fs.CountError(ctx, err)
 			c.differences.Add(1)
 			c.dstFilesMissing.Add(1)
@@ -190,7 +190,7 @@ func (c *checkMarch) Match(ctx context.Context, dst, src fs.DirEntry) (recurse b
 			return true
 		}
 		err := fmt.Errorf("is file on %v but directory on %v", c.opt.Fdst, c.opt.Fsrc)
-		fs.Errorf(dst, "%v", err)
+		fs.ErrorfCtx(ctx, dst, "%v", err)
 		_ = fs.CountError(ctx, err)
 		c.differences.Add(1)
 		c.srcFilesMissing.Add(1)
@@ -230,7 +230,7 @@ func CheckFn(ctx context.Context, opt *CheckOpt) error {
 		NoTraverse:             ci.NoTraverse,
 		NoUnicodeNormalization: ci.NoUnicodeNormalization,
 	}
-	fs.Debugf(c.opt.Fdst, "Waiting for checks to finish")
+	fs.DebugfCtx(ctx, c.opt.Fdst, "Waiting for checks to finish")
 	err := m.Run(ctx)
 	c.wg.Wait() // wait for background go-routines
 
@@ -239,25 +239,25 @@ func CheckFn(ctx context.Context, opt *CheckOpt) error {
 
 func (c *checkMarch) reportResults(ctx context.Context, err error) error {
 	if c.dstFilesMissing.Load() > 0 {
-		fs.Logf(c.opt.Fdst, "%d files missing", c.dstFilesMissing.Load())
+		fs.LogfCtx(ctx, c.opt.Fdst, "%d files missing", c.dstFilesMissing.Load())
 	}
 	if c.srcFilesMissing.Load() > 0 {
 		entity := "files"
 		if c.opt.Fsrc == nil {
 			entity = "hashes"
 		}
-		fs.Logf(c.opt.Fsrc, "%d %s missing", c.srcFilesMissing.Load(), entity)
+		fs.LogfCtx(ctx, c.opt.Fsrc, "%d %s missing", c.srcFilesMissing.Load(), entity)
 	}
 
-	fs.Logf(c.opt.Fdst, "%d differences found", c.differences.Load())
+	fs.LogfCtx(ctx, c.opt.Fdst, "%d differences found", c.differences.Load())
 	if errs := accounting.Stats(ctx).GetErrors(); errs > 0 {
-		fs.Logf(c.opt.Fdst, "%d errors while checking", errs)
+		fs.LogfCtx(ctx, c.opt.Fdst, "%d errors while checking", errs)
 	}
 	if c.noHashes.Load() > 0 {
-		fs.Logf(c.opt.Fdst, "%d hashes could not be checked", c.noHashes.Load())
+		fs.LogfCtx(ctx, c.opt.Fdst, "%d hashes could not be checked", c.noHashes.Load())
 	}
 	if c.matches.Load() > 0 {
-		fs.Logf(c.opt.Fdst, "%d matching files", c.matches.Load())
+		fs.LogfCtx(ctx, c.opt.Fdst, "%d matching files", c.matches.Load())
 	}
 	if err != nil {
 		return err
@@ -284,7 +284,7 @@ func Check(ctx context.Context, opt *CheckOpt) error {
 		}
 		if !same {
 			err = fmt.Errorf("%v differ", ht)
-			fs.Errorf(src, "%v", err)
+			fs.ErrorfCtx(ctx, src, "%v", err)
 			return true, false, nil
 		}
 		return false, false, nil
@@ -296,8 +296,8 @@ func Check(ctx context.Context, opt *CheckOpt) error {
 // CheckEqualReaders checks to see if in1 and in2 have the same
 // content when read.
 //
-// it returns true if differences were found
-func CheckEqualReaders(in1, in2 io.Reader) (differ bool, err error) {
+// it returns true if no differences were found
+func CheckEqualReaders(in1, in2 io.Reader) (equal bool, err error) {
 	const bufSize = 64 * 1024
 	buf1 := make([]byte, bufSize)
 	buf2 := make([]byte, bufSize)
@@ -306,42 +306,42 @@ func CheckEqualReaders(in1, in2 io.Reader) (differ bool, err error) {
 		n2, err2 := readers.ReadFill(in2, buf2)
 		// check errors
 		if err1 != nil && err1 != io.EOF {
-			return true, err1
+			return false, err1
 		} else if err2 != nil && err2 != io.EOF {
-			return true, err2
+			return false, err2
 		}
 		// err1 && err2 are nil or io.EOF here
 		// process the data
 		if n1 != n2 || !bytes.Equal(buf1[:n1], buf2[:n2]) {
-			return true, nil
+			return false, nil
 		}
 		// if both streams finished the we have finished
 		if err1 == io.EOF && err2 == io.EOF {
 			break
 		}
 	}
-	return false, nil
+	return true, nil
 }
 
 // CheckIdenticalDownload checks to see if dst and src are identical
 // by reading all their bytes if necessary.
 //
-// it returns true if differences were found
-func CheckIdenticalDownload(ctx context.Context, dst, src fs.Object) (differ bool, err error) {
+// it returns true if no differences were found
+func CheckIdenticalDownload(ctx context.Context, src, dst fs.Object) (equal bool, err error) {
 	ci := fs.GetConfig(ctx)
 	err = Retry(ctx, src, ci.LowLevelRetries, func() error {
-		differ, err = checkIdenticalDownload(ctx, dst, src)
+		equal, err = checkIdenticalDownload(ctx, src, dst)
 		return err
 	})
-	return differ, err
+	return equal, err
 }
 
 // Does the work for CheckIdenticalDownload
-func checkIdenticalDownload(ctx context.Context, dst, src fs.Object) (differ bool, err error) {
+func checkIdenticalDownload(ctx context.Context, src, dst fs.Object) (equal bool, err error) {
 	var in1, in2 io.ReadCloser
 	in1, err = Open(ctx, dst)
 	if err != nil {
-		return true, fmt.Errorf("failed to open %q: %w", dst, err)
+		return false, fmt.Errorf("failed to open %q: %w", dst, err)
 	}
 	tr1 := accounting.Stats(ctx).NewTransfer(dst, nil)
 	defer func() {
@@ -351,7 +351,7 @@ func checkIdenticalDownload(ctx context.Context, dst, src fs.Object) (differ boo
 
 	in2, err = Open(ctx, src)
 	if err != nil {
-		return true, fmt.Errorf("failed to open %q: %w", src, err)
+		return false, fmt.Errorf("failed to open %q: %w", src, err)
 	}
 	tr2 := accounting.Stats(ctx).NewTransfer(dst, nil)
 	defer func() {
@@ -360,7 +360,7 @@ func checkIdenticalDownload(ctx context.Context, dst, src fs.Object) (differ boo
 	in2 = tr2.Account(ctx, in2).WithBuffer() // account and buffer the transfer
 
 	// To assign err variable before defer.
-	differ, err = CheckEqualReaders(in1, in2)
+	equal, err = CheckEqualReaders(in1, in2)
 	return
 }
 
@@ -368,12 +368,17 @@ func checkIdenticalDownload(ctx context.Context, dst, src fs.Object) (differ boo
 // and the actual contents of the files.
 func CheckDownload(ctx context.Context, opt *CheckOpt) error {
 	optCopy := *opt
-	optCopy.Check = func(ctx context.Context, a, b fs.Object) (differ bool, noHash bool, err error) {
-		differ, err = CheckIdenticalDownload(ctx, a, b)
+	optCopy.Check = func(ctx context.Context, dst, src fs.Object) (differ bool, noHash bool, err error) {
+		same, err := CheckIdenticalDownload(ctx, src, dst)
 		if err != nil {
 			return true, true, fmt.Errorf("failed to download: %w", err)
 		}
-		return differ, false, nil
+		if !same {
+			err = errors.New("contents differ")
+			fs.ErrorfCtx(ctx, src, "%v", err)
+			return true, false, nil
+		}
+		return false, false, nil
 	}
 	return CheckFn(ctx, &optCopy)
 }
@@ -452,7 +457,7 @@ func CheckSum(ctx context.Context, fsrc, fsum fs.Fs, sumFile string, hashType ha
 		}
 		// filesystem missed the file, sum wasn't consumed
 		err := fmt.Errorf("file not in %v", opt.Fdst)
-		fs.Errorf(filename, "%v", err)
+		fs.ErrorfCtx(ctx, filename, "%v", err)
 		_ = fs.CountError(ctx, err)
 		if lastErr == nil {
 			lastErr = err
@@ -476,24 +481,16 @@ func (c *checkMarch) checkSum(ctx context.Context, obj fs.Object, download bool,
 		return
 	}
 
-	var err error
 	tr := accounting.Stats(ctx).NewCheckingTransfer(obj, "hashing")
-	defer tr.Done(ctx, err)
 
 	if !sumFound {
-		err = errors.New("sum not found")
+		err := errors.New("sum not found")
 		_ = fs.CountError(ctx, err)
-		fs.Errorf(obj, "%v", err)
+		fs.ErrorfCtx(ctx, obj, "%v", err)
 		c.differences.Add(1)
 		c.srcFilesMissing.Add(1)
 		c.report(obj, c.opt.MissingOnSrc, '-')
-		return
-	}
-
-	if !download {
-		var objHash string
-		objHash, err = obj.Hash(ctx, hashType)
-		c.matchSum(ctx, sumHash, objHash, obj, err, hashType)
+		tr.Done(ctx, nil)
 		return
 	}
 
@@ -507,16 +504,21 @@ func (c *checkMarch) checkSum(ctx context.Context, obj fs.Object, download bool,
 		)
 		defer func() {
 			c.matchSum(ctx, sumHash, objHash, obj, err, hashType)
+			tr.Done(ctx, nil)
 			<-c.tokens // get the token back to free up a slot
 			c.wg.Done()
 		}()
+		if !download {
+			objHash, err = obj.Hash(ctx, hashType)
+			return
+		}
 		if in, err = Open(ctx, obj); err != nil {
 			return
 		}
-		tr := accounting.Stats(ctx).NewTransfer(obj, nil)
-		in = tr.Account(ctx, in).WithBuffer() // account and buffer the transfer
+		dlTr := accounting.Stats(ctx).NewTransfer(obj, nil)
+		in = dlTr.Account(ctx, in).WithBuffer() // account and buffer the transfer
 		defer func() {
-			tr.Done(ctx, nil) // will close the stream
+			dlTr.Done(ctx, nil) // will close the stream
 		}()
 		hashVals, err2 := hash.StreamTypes(in, hash.NewHashSet(hashType))
 		if err2 != nil {
@@ -532,29 +534,29 @@ func (c *checkMarch) matchSum(ctx context.Context, sumHash, objHash string, obj 
 	switch {
 	case err != nil:
 		_ = fs.CountError(ctx, err)
-		fs.Errorf(obj, "Failed to calculate hash: %v", err)
+		fs.ErrorfCtx(ctx, obj, "Failed to calculate hash: %v", err)
 		c.report(obj, c.opt.Error, '!')
 	case sumHash == "":
 		err = errors.New("duplicate file")
 		_ = fs.CountError(ctx, err)
-		fs.Errorf(obj, "%v", err)
+		fs.ErrorfCtx(ctx, obj, "%v", err)
 		c.report(obj, c.opt.Error, '!')
 	case objHash == "":
-		fs.Debugf(nil, "%v = %s (sum)", hashType, sumHash)
-		fs.Debugf(obj, "%v - could not check hash (%v)", hashType, c.opt.Fdst)
+		fs.DebugfCtx(ctx, nil, "%v = %s (sum)", hashType, sumHash)
+		fs.DebugfCtx(ctx, obj, "%v - could not check hash (%v)", hashType, c.opt.Fdst)
 		c.noHashes.Add(1)
 		c.matches.Add(1)
 		c.report(obj, c.opt.Match, '=')
 	case objHash == sumHash:
-		fs.Debugf(obj, "%v = %s OK", hashType, sumHash)
+		fs.DebugfCtx(ctx, obj, "%v = %s OK", hashType, sumHash)
 		c.matches.Add(1)
 		c.report(obj, c.opt.Match, '=')
 	default:
 		err = errors.New("files differ")
 		_ = fs.CountError(ctx, err)
-		fs.Debugf(nil, "%v = %s (sum)", hashType, sumHash)
-		fs.Debugf(obj, "%v = %s (%v)", hashType, objHash, c.opt.Fdst)
-		fs.Errorf(obj, "%v", err)
+		fs.DebugfCtx(ctx, nil, "%v = %s (sum)", hashType, sumHash)
+		fs.DebugfCtx(ctx, obj, "%v = %s (%v)", hashType, objHash, c.opt.Fdst)
+		fs.ErrorfCtx(ctx, obj, "%v", err)
 		c.differences.Add(1)
 		c.report(obj, c.opt.Differ, '*')
 	}
@@ -593,7 +595,7 @@ func ParseSumFile(ctx context.Context, sumFile fs.Object) (HashSums, error) {
 		if fields == nil {
 			numWarn++
 			if numWarn <= maxWarn {
-				fs.Logf(sumFile, "improperly formatted checksum line %d", lineNo)
+				fs.LogfCtx(ctx, sumFile, "improperly formatted checksum line %d", lineNo)
 			}
 			continue
 		}
@@ -602,7 +604,7 @@ func ParseSumFile(ctx context.Context, sumFile fs.Object) (HashSums, error) {
 		if hashes[file] != "" {
 			numWarn++
 			if numWarn <= maxWarn {
-				fs.Logf(sumFile, "duplicate file on checksum line %d", lineNo)
+				fs.LogfCtx(ctx, sumFile, "duplicate file on checksum line %d", lineNo)
 			}
 			continue
 		}
@@ -612,7 +614,7 @@ func ParseSumFile(ctx context.Context, sumFile fs.Object) (HashSums, error) {
 	}
 
 	if numWarn > maxWarn {
-		fs.Logf(sumFile, "%d warning(s) suppressed...", numWarn-maxWarn)
+		fs.LogfCtx(ctx, sumFile, "%d warning(s) suppressed...", numWarn-maxWarn)
 	}
 	if err = rd.Close(); err != nil {
 		return nil, err

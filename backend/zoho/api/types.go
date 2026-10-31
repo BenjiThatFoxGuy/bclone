@@ -1,4 +1,4 @@
-﻿// Package api provides types used by the Zoho API.
+// Package api provides types used by the Zoho API.
 package api
 
 import (
@@ -256,7 +256,7 @@ type WriteMultiMetadataRequest struct {
 
 // WriteMetadata is used to write item metadata
 type WriteMetadata struct {
-	Attributes WriteAttributes `json:"attributes,omitempty"`
+	Attributes WriteAttributes `json:"attributes"`
 	ID         string          `json:"id,omitempty"`
 	Type       string          `json:"type"`
 }

@@ -1,12 +1,16 @@
-﻿// Package jobs manages background jobs that the rc is running.
+// Package jobs manages background jobs that the rc is running.
 package jobs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,8 +19,8 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/cache"
-	"github.com/rclone/rclone/fs/filter"
 	"github.com/rclone/rclone/fs/rc"
+	"golang.org/x/sync/errgroup"
 )
 
 // Fill in these to avoid circular dependencies
@@ -29,6 +33,7 @@ func init() {
 type Job struct {
 	mu        sync.Mutex
 	ID        int64     `json:"id"`
+	ExecuteID string    `json:"executeId"`
 	Group     string    `json:"group"`
 	StartTime time.Time `json:"startTime"`
 	EndTime   time.Time `json:"endTime"`
@@ -103,7 +108,11 @@ func (job *Job) OnFinish(fn func()) func() {
 func (job *Job) run(ctx context.Context, fn rc.Func, in rc.Params) {
 	defer func() {
 		if r := recover(); r != nil {
-			job.finish(nil, fmt.Errorf("panic received: %v \n%s", r, string(debug.Stack())))
+			// Log the full stack trace server-side only - it must not
+			// be returned to the rc caller as it leaks internal paths,
+			// dependency versions and memory addresses.
+			fs.Errorf(nil, "rc: job %d panic: %v\n%s", job.ID, r, string(debug.Stack()))
+			job.finish(nil, fmt.Errorf("panic received: %v", r))
 		}
 	}()
 	job.finish(fn(ctx, in))
@@ -118,8 +127,9 @@ type Jobs struct {
 }
 
 var (
-	running   = newJobs()
-	jobID     atomic.Int64
+	running = newJobs()
+	jobID   atomic.Int64
+	// executeID is a unique ID for this rclone execution
 	executeID = uuid.New().String()
 )
 
@@ -184,6 +194,22 @@ func (jobs *Jobs) IDs() (IDs []int64) {
 	return IDs
 }
 
+// Stats returns the IDs of the running and finished jobs
+func (jobs *Jobs) Stats() (running []int64, finished []int64) {
+	jobs.mu.RLock()
+	defer jobs.mu.RUnlock()
+	running = []int64{}
+	finished = []int64{}
+	for jobID := range jobs.jobs {
+		if jobs.jobs[jobID].Finished {
+			finished = append(finished, jobID)
+		} else {
+			running = append(running, jobID)
+		}
+	}
+	return running, finished
+}
+
 // Get a job with a given ID or nil if it doesn't exist
 func (jobs *Jobs) Get(ID int64) *Job {
 	jobs.mu.RLock()
@@ -232,41 +258,6 @@ func getAsync(ctx context.Context, in rc.Params) (context.Context, bool, error) 
 	return ctx, isAsync, nil
 }
 
-// See if _config is set and if so adjust ctx to include it
-func getConfig(ctx context.Context, in rc.Params) (context.Context, error) {
-	if _, ok := in["_config"]; !ok {
-		return ctx, nil
-	}
-	ctx, ci := fs.AddConfig(ctx)
-	err := in.GetStruct("_config", ci)
-	if err != nil {
-		return ctx, err
-	}
-	delete(in, "_config") // remove the parameter
-	return ctx, nil
-}
-
-// See if _filter is set and if so adjust ctx to include it
-func getFilter(ctx context.Context, in rc.Params) (context.Context, error) {
-	if _, ok := in["_filter"]; !ok {
-		return ctx, nil
-	}
-	// Copy of the current filter options
-	opt := filter.GetConfig(ctx).Opt
-	// Update the options from the parameter
-	err := in.GetStruct("_filter", &opt)
-	if err != nil {
-		return ctx, err
-	}
-	fi, err := filter.NewFilter(&opt)
-	if err != nil {
-		return ctx, err
-	}
-	ctx = filter.ReplaceConfig(ctx, fi)
-	delete(in, "_filter") // remove the parameter
-	return ctx, nil
-}
-
 type jobKeyType struct{}
 
 // Key for adding jobs to ctx
@@ -286,12 +277,12 @@ func (jobs *Jobs) NewJob(ctx context.Context, fn rc.Func, in rc.Params) (job *Jo
 		return nil, nil, err
 	}
 
-	ctx, err = getConfig(ctx, in)
+	ctx, err = rc.AddConfig(ctx, in)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	ctx, err = getFilter(ctx, in)
+	ctx, err = rc.AddFilter(ctx, in)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -319,6 +310,7 @@ func (jobs *Jobs) NewJob(ctx context.Context, fn rc.Func, in rc.Params) (job *Jo
 	}
 	job = &Job{
 		ID:        id,
+		ExecuteID: executeID,
 		Group:     group,
 		StartTime: time.Now(),
 		Stop:      stop,
@@ -331,10 +323,14 @@ func (jobs *Jobs) NewJob(ctx context.Context, fn rc.Func, in rc.Params) (job *Jo
 	// Add the job to the context
 	ctx = context.WithValue(ctx, jobKey, job)
 
+	// Mark the context as created from an rc request
+	ctx = fs.WithRCRequest(ctx)
+
 	if isAsync {
 		go job.run(ctx, fn, in)
 		out = make(rc.Params)
 		out["jobid"] = job.ID
+		out["executeId"] = job.ExecuteID
 		err = nil
 	} else {
 		job.run(ctx, fn, in)
@@ -392,6 +388,7 @@ Results:
 - error - error from the job or empty string for no error
 - finished - boolean whether the job has finished or not
 - id - as passed in above
+- executeId - rclone instance ID (changes after restart); combined with id uniquely identifies a job
 - startTime - time the job started (e.g. "2018-10-26T18:50:20.528336039+01:00")
 - success - boolean - true for success false otherwise
 - output - output of the job as would have been returned if called synchronously
@@ -431,6 +428,8 @@ Results:
 
 - executeId - string id of rclone executing (change after restart)
 - jobids - array of integer job ids (starting at 1 on each restart)
+- runningIds - array of integer job ids that are running
+- finishedIds - array of integer job ids that are finished
 `,
 	})
 }
@@ -439,6 +438,9 @@ Results:
 func rcJobList(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 	out = make(rc.Params)
 	out["jobids"] = running.IDs()
+	runningIDs, finishedIDs := running.Stats()
+	out["runningIds"] = runningIDs
+	out["finishedIds"] = finishedIDs
 	out["executeId"] = executeID
 	return out, nil
 }
@@ -500,5 +502,250 @@ func rcGroupStop(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 		}
 	}
 	out = make(rc.Params)
+	return out, nil
+}
+
+// NewJobFromParams creates an rc job rc.Params.
+//
+// The JSON blob should contain a _path entry.
+//
+// It returns a rc.Params as output which may be an error.
+func NewJobFromParams(ctx context.Context, in rc.Params) (out rc.Params) {
+	path := "unknown"
+
+	// Return an rc error blob
+	rcError := func(err error, status int) rc.Params {
+		fs.Errorf(nil, "rc: %q: error: %v", path, err)
+		out, _ = rc.Error(path, in, err, status)
+		return out
+	}
+
+	// Find the call
+	path, err := in.GetString("_path")
+	if err != nil {
+		return rcError(err, http.StatusNotFound)
+	}
+	delete(in, "_path")
+	call := rc.Calls.Get(path)
+	if call == nil {
+		return rcError(fmt.Errorf("couldn't find path %q", path), http.StatusNotFound)
+	}
+	if call.NeedsRequest {
+		return rcError(fmt.Errorf("can't run path %q as it needs the request", path), http.StatusBadRequest)
+	}
+	if call.NeedsResponse {
+		return rcError(fmt.Errorf("can't run path %q as it needs the response", path), http.StatusBadRequest)
+	}
+
+	// Pass on the group if one is set in the context and it isn't set in the input.
+	if _, found := in["_group"]; !found {
+		group, ok := accounting.StatsGroupFromContext(ctx)
+		if ok {
+			in["_group"] = group
+		}
+	}
+
+	fs.Debugf(nil, "rc: %q: with parameters %+v", path, in)
+	_, out, err = NewJob(ctx, call.Fn, in)
+	if err != nil {
+		return rcError(err, http.StatusInternalServerError)
+	}
+	if out == nil {
+		out = make(rc.Params)
+	}
+
+	fs.Debugf(nil, "rc: %q: reply %+v: %v", path, out, err)
+	return out
+}
+
+// NewJobFromBytes creates an rc job from a JSON blob as bytes.
+//
+// The JSON blob should contain a _path entry.
+//
+// It returns a JSON blob as output which may be an error.
+func NewJobFromBytes(ctx context.Context, inBuf []byte) (outBuf []byte) {
+	var in rc.Params
+	var out rc.Params
+
+	// Parse a JSON blob from the input
+	err := json.Unmarshal(inBuf, &in)
+	if err != nil {
+		out, _ = rc.Error("unknown", in, err, http.StatusBadRequest)
+	} else {
+		out = NewJobFromParams(ctx, in)
+	}
+
+	var w bytes.Buffer
+	err = rc.WriteJSON(&w, out)
+	if err != nil {
+		fs.Errorf(nil, "rc: NewJobFromBytes: failed to write JSON output: %v", err)
+		return []byte(`{"error":"failed to write JSON output"}`)
+	}
+	return w.Bytes()
+}
+
+func init() {
+	rc.Add(rc.Call{
+		Path:  "job/batch",
+		Fn:    rcBatch,
+		Title: "Run a batch of rclone rc commands concurrently.",
+		Help: strings.ReplaceAll(`
+This takes the following parameters:
+
+- concurrency - int - do this many commands concurrently. Defaults to |--transfers| if not set.
+- inputs - an list of inputs to the commands with an extra |_path| parameter
+
+|||json
+{
+    "_path": "rc/path",
+    "param1": "parameter for the path as documented",
+    "param2": "parameter for the path as documented, etc",
+}
+|||
+
+The inputs may use |_async|, |_group|, |_config| and |_filter| as normal when using the rc.
+
+Returns:
+
+- results - a list of results from the commands with one entry for each in inputs.
+
+For example:
+
+|||sh
+rclone rc job/batch --json '{
+  "inputs": [
+    {
+      "_path": "rc/noop",
+      "parameter": "OK"
+    },
+    {
+      "_path": "rc/error",
+      "parameter": "BAD"
+    }
+  ]
+}
+'
+|||
+
+Gives the result:
+
+|||json
+{
+  "results": [
+    {
+      "parameter": "OK"
+    },
+    {
+      "error": "arbitrary error on input map[parameter:BAD]",
+      "input": {
+        "parameter": "BAD"
+      },
+      "path": "rc/error",
+      "status": 500
+    }
+  ]
+}
+|||
+`, "|", "`"),
+	})
+}
+
+/*
+// Run a single batch job
+func runBatchJob(ctx context.Context, inputAny any) (out rc.Params, err error) {
+	var in rc.Params
+	path := "unknown"
+	defer func() {
+		if err != nil {
+			out, _ = rc.Error(path, in, err, http.StatusInternalServerError)
+		}
+	}()
+
+	// get the inputs to the job
+	input, ok := inputAny.(map[string]any)
+	if !ok {
+		return nil, rc.NewErrParamInvalid(fmt.Errorf("\"inputs\" items must be objects not %T", inputAny))
+	}
+	in = rc.Params(input)
+	path, err = in.GetString("_path")
+	if err != nil {
+		return nil, err
+	}
+	delete(in, "_path")
+	call := rc.Calls.Get(path)
+
+	// Check call
+	if call == nil {
+		return nil, rc.NewErrParamInvalid(fmt.Errorf("path %q does not exist", path))
+	}
+	path = call.Path
+	if call.NeedsRequest {
+		return nil, rc.NewErrParamInvalid(fmt.Errorf("can't run path %q as it needs the request", path))
+	}
+	if call.NeedsResponse {
+		return nil, rc.NewErrParamInvalid(fmt.Errorf("can't run path %q as it needs the response", path))
+	}
+
+	// Run the job
+	_, out, err = NewJob(ctx, call.Fn, in)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reshape (serialize then deserialize) the data so it is in the form expected
+	err = rc.Reshape(&out, out)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+        }
+*/
+
+// Batch the registered commands
+func rcBatch(ctx context.Context, in rc.Params) (out rc.Params, err error) {
+	out = make(rc.Params)
+
+	// Read inputs
+	inputsAny, err := in.Get("inputs")
+	if err != nil {
+		return nil, err
+	}
+	inputs, ok := inputsAny.([]any)
+	if !ok {
+		return nil, rc.NewErrParamInvalid(fmt.Errorf("expecting list key %q (was %T)", "inputs", inputsAny))
+	}
+
+	// Read concurrency
+	concurrency, err := in.GetInt("concurrency")
+	if rc.IsErrParamNotFound(err) {
+		ci := fs.GetConfig(ctx)
+		concurrency = ci.Transfers
+	} else if err != nil {
+		return nil, err
+	}
+
+	// Prepare outputs
+	results := make([]rc.Params, len(inputs))
+	out["results"] = results
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(concurrency)
+	for i, inputAny := range inputs {
+		input, ok := inputAny.(map[string]any)
+		if !ok {
+			results[i], _ = rc.Error("unknown", nil, fmt.Errorf("\"inputs\" items must be objects not %T", inputAny), http.StatusBadRequest)
+			continue
+		}
+		in := rc.Params(input)
+		if concurrency <= 1 {
+			results[i] = NewJobFromParams(ctx, in)
+		} else {
+			g.Go(func() error {
+				results[i] = NewJobFromParams(gCtx, in)
+				return nil
+			})
+		}
+	}
+	_ = g.Wait()
 	return out, nil
 }

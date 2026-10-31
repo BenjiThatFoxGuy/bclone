@@ -1,4 +1,4 @@
-﻿package odrvcookie
+package odrvcookie
 
 import (
 	"time"

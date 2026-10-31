@@ -1,4 +1,4 @@
-﻿// Package sugarsync provides an interface to the Sugarsync
+// Package sugarsync provides an interface to the Sugarsync
 // object storage system.
 package sugarsync
 
@@ -88,7 +88,7 @@ func init() {
 				if opt.RefreshToken == "" {
 					return fs.ConfigGoto("username")
 				}
-				return fs.ConfigConfirm("refresh", true, "config_refresh", "Already have a token - refresh?")
+				return fs.ConfigConfirm("refresh", true, "config_refresh", "Token already configured - replace it?")
 			case "refresh":
 				if config.Result == "false" {
 					return nil, nil

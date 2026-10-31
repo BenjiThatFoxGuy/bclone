@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -318,6 +319,7 @@ func TestAddMediaToAlbum(t *testing.T) {
 }
 
 func TestPostProtobufErrorStatus(t *testing.T) {
+	setFastThrottle(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth", fakeAuthHandler)
 	mux.HandleFunc("/hashcheck", func(w http.ResponseWriter, r *http.Request) {
@@ -329,5 +331,75 @@ func TestPostProtobufErrorStatus(t *testing.T) {
 	_, err := c.FindRemoteMediaByHash(context.Background(), []byte{1})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func setFastThrottle(t *testing.T) {
+	t.Helper()
+	oldMin, oldMax := throttleMinDelay, throttleMaxDelay
+	throttleMinDelay, throttleMaxDelay = time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { throttleMinDelay, throttleMaxDelay = oldMin, oldMax })
+}
+
+func TestAddMediaToAlbumRetriesThrottled(t *testing.T) {
+	setFastThrottle(t)
+	var calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth", fakeAuthHandler)
+	mux.HandleFunc("/addtoalbum", func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			http.Error(w, "The service is currently unavailable.", http.StatusServiceUnavailable)
+		case 2:
+			http.Error(w, "Internal error encountered.", http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+	c, server := newTestClient(t, mux)
+	defer server.Close()
+
+	if err := c.AddMediaToAlbum(context.Background(), "album", []string{"m1"}); err != nil {
+		t.Fatalf("AddMediaToAlbum: %v", err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("calls = %d, want 3 (two throttled, then success)", got)
+	}
+}
+
+func TestThrottleIsSharedAndGivesUp(t *testing.T) {
+	setFastThrottle(t)
+	var calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth", fakeAuthHandler)
+	mux.HandleFunc("/addtoalbum", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	})
+	mux.HandleFunc("/hashcheck", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad", http.StatusBadRequest)
+	})
+	c, server := newTestClient(t, mux)
+	defer server.Close()
+
+	err := c.AddMediaToAlbum(context.Background(), "album", []string{"m1"})
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("err = %v, want the final 503", err)
+	}
+	if got := calls.Load(); got != throttleRetries+1 {
+		t.Fatalf("calls = %d, want %d", got, throttleRetries+1)
+	}
+
+	// Another call made during the back-off waits for it before going out
+	c.throttleMu.Lock()
+	c.throttleUntil = time.Now().Add(50 * time.Millisecond)
+	c.throttleMu.Unlock()
+	start := time.Now()
+	_, err = c.FindRemoteMediaByHash(context.Background(), []byte("0123456789abcdefghij"))
+	if err == nil {
+		t.Fatal("expected the 400 to be returned")
+	}
+	if waited := time.Since(start); waited < 40*time.Millisecond {
+		t.Fatalf("request went out after %v, during the shared back-off", waited)
 	}
 }

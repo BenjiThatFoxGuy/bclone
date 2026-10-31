@@ -1,4 +1,4 @@
-﻿// Package changenotify tests rclone's changenotify support
+// Package changenotify tests rclone's changenotify support
 package changenotify
 
 import (

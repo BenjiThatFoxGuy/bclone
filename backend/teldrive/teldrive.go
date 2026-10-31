@@ -1,4 +1,4 @@
-﻿// Package teldrive provides an interface to the teldrive storage system.
+// Package teldrive provides an interface to the teldrive storage system.
 package teldrive
 
 import (

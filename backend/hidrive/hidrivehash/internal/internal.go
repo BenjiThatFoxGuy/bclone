@@ -1,4 +1,4 @@
-﻿// Package internal provides utilities for HiDrive.
+// Package internal provides utilities for HiDrive.
 package internal
 
 import (

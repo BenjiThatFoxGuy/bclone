@@ -1,4 +1,4 @@
-﻿// Package api provides types used by the Google Photos API.
+// Package api provides types used by the Google Photos API.
 package api
 
 import (
@@ -116,8 +116,8 @@ type Date struct {
 type DateFilter struct {
 	Dates  []Date `json:"dates,omitempty"`
 	Ranges []struct {
-		StartDate Date `json:"startDate,omitempty"`
-		EndDate   Date `json:"endDate,omitempty"`
+		StartDate Date `json:"startDate"`
+		EndDate   Date `json:"endDate"`
 	} `json:"ranges,omitempty"`
 }
 

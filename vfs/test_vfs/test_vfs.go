@@ -1,4 +1,4 @@
-﻿// Test the VFS to exhaustion, specifically looking for deadlocks
+// Test the VFS to exhaustion, specifically looking for deadlocks
 //
 // Run on a mounted filesystem
 package main
@@ -296,13 +296,11 @@ func main() {
 		quit = make(chan struct{}, *iterations)
 	)
 	for range *number {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			t := NewTest(dir)
 			defer t.Tidy()
 			t.RandomTests(*iterations, quit)
-		}()
+		})
 	}
 	wg.Wait()
 }

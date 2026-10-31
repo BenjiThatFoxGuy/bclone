@@ -1,4 +1,4 @@
-﻿// Package api provides types used by the Quatrix API.
+// Package api provides types used by the Quatrix API.
 package api
 
 import (

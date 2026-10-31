@@ -1,4 +1,4 @@
-﻿// Package info provides the info test command.
+// Package info provides the info test command.
 package info
 
 // FIXME once translations are implemented will need a no-escape
@@ -233,7 +233,6 @@ func (r *results) checkStringPositions(k, s string) {
 	fs.Infof(r.f, "Writing position file 0x%0X", s)
 	positionError := internal.PositionNone
 	res := internal.ControlResult{
-		Text:       s,
 		WriteError: make(map[internal.Position]string, 3),
 		GetError:   make(map[internal.Position]string, 3),
 		InList:     make(map[internal.Position]internal.Presence, 3),

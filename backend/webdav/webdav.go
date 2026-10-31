@@ -1,4 +1,4 @@
-﻿// Package webdav provides an interface to the Webdav
+// Package webdav provides an interface to the Webdav
 // object storage system.
 package webdav
 
@@ -25,6 +25,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Azure/go-ntlmssp"
+	"golang.org/x/sync/singleflight"
+
 	"github.com/rclone/rclone/backend/webdav/api"
 	"github.com/rclone/rclone/backend/webdav/odrvcookie"
 	"github.com/rclone/rclone/fs"
@@ -35,11 +38,10 @@ import (
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/fs/list"
 	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/rest"
-
-	ntlmssp "github.com/Azure/go-ntlmssp"
 )
 
 const (
@@ -133,6 +135,13 @@ The input format is comma separated list of key,value pairs.  Standard
 For example, to set a Cookie use 'Cookie,name=value', or '"Cookie","name=value"'.
 
 You can set multiple headers, e.g. '"Cookie","name=value","Authorization","xxx"'.
+
+The headers are only sent to the host in the configured URL. If the
+server redirects to another host (including a subdomain or a different
+port) the headers are not sent to it, or to any further hop in that
+redirect chain. The exception is the directory listing and file
+download requests when auth_redirect is set, as that keeps all
+credentials across redirects.
 `,
 			Default:  fs.CommaSepList{},
 			Advanced: true,
@@ -178,6 +187,10 @@ to an unknown webserver.
 However this is desirable in some circumstances. If you are getting
 an error like "401 Unauthorized" when rclone is attempting to read
 files from the webdav server then you can try this option.
+
+Note that enabling this also permits sending your credentials over a
+plaintext HTTP connection if the server redirects from HTTPS to HTTP,
+which rclone otherwise refuses to do.
 `,
 				Advanced: true,
 				Default:  false,
@@ -192,7 +205,7 @@ type Options struct {
 	User               string               `config:"user"`
 	Pass               string               `config:"pass"`
 	BearerToken        string               `config:"bearer_token"`
-	BearerTokenCommand string               `config:"bearer_token_command"`
+	BearerTokenCommand fs.SpaceSepList      `config:"bearer_token_command"`
 	Enc                encoder.MultiEncoder `config:"encoding"`
 	Headers            fs.CommaSepList      `config:"headers"`
 	PacerMinSleep      fs.Duration          `config:"pacer_min_sleep"`
@@ -223,9 +236,14 @@ type Fs struct {
 	hasOCMD5           bool          // set if can use owncloud style checksums for MD5
 	hasOCSHA1          bool          // set if can use owncloud style checksums for SHA1
 	hasMESHA1          bool          // set if can use fastmail style checksums for SHA1
+	useStandardProps   bool          // set if should use standard props for PROPFIND
 	ntlmAuthMu         sync.Mutex    // mutex to serialize NTLM auth roundtrips
 	chunksUploadURL    string        // upload URL for nextcloud chunked
 	canChunk           bool          // set if nextcloud and nextcloud_chunk_size is set
+	canRecalcHash      bool          // set if the server can recalculate checksums with PATCH (nextcloud)
+	authSingleflight   *singleflight.Group
+	// redirect policy which keeps opt.Headers on the configured host
+	checkRedirect func(req *http.Request, via []*http.Request) error
 }
 
 // Object describes a webdav object
@@ -282,7 +300,7 @@ func (f *Fs) shouldRetry(ctx context.Context, resp *http.Response, err error) (b
 		return false, err
 	}
 	// If we have a bearer token command and it has expired then refresh it
-	if f.opt.BearerTokenCommand != "" && resp != nil && resp.StatusCode == 401 {
+	if len(f.opt.BearerTokenCommand) != 0 && resp != nil && resp.StatusCode == 401 {
 		fs.Debugf(f, "Bearer token expired: %v", err)
 		authErr := f.fetchAndSetBearerToken()
 		if authErr != nil {
@@ -336,33 +354,72 @@ func itemIsDir(item *api.Response) bool {
 	return false
 }
 
+// sabreNotFound is the exception SabreDAV based servers report for a
+// path which doesn't exist
+var sabreNotFound = []byte(`Sabre\DAV\Exception\NotFound`)
+
+// callPropfind does the PROPFIND in opts and decodes the response into result
+//
+// ownCloud 10.16 starts a 207 Multi-Status response before it finds
+// that the path doesn't exist, then appends a Sabre NotFound error to
+// it which makes it invalid XML. This is returned as the 404 *api.Error
+// which servers normally give for a path which doesn't exist.
+func (f *Fs) callPropfind(ctx context.Context, opts *rest.Opts, result *api.Multistatus) (resp *http.Response, err error) {
+	resp, err = f.srv.Call(ctx, opts)
+	if err != nil {
+		return resp, err
+	}
+	// Keep the start of the body to look for the error in
+	start := make([]byte, 4096)
+	n, _ := io.ReadFull(resp.Body, start)
+	start = start[:n]
+	body := resp.Body
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(start), body), body}
+	err = rest.DecodeXML(resp, result)
+	if err != nil && bytes.Contains(start, sabreNotFound) {
+		return resp, &api.Error{
+			Exception:  string(sabreNotFound),
+			Status:     http.StatusText(http.StatusNotFound),
+			StatusCode: http.StatusNotFound,
+		}
+	}
+	return resp, err
+}
+
 // readMetaDataForPath reads the metadata from the path
-func (f *Fs) readMetaDataForPath(ctx context.Context, path string, depth string) (info *api.Prop, err error) {
+func (f *Fs) readMetaDataForPath(ctx context.Context, path string) (info *api.Prop, err error) {
 	// FIXME how do we read back additional properties?
 	opts := rest.Opts{
 		Method: "PROPFIND",
 		Path:   f.filePath(path),
 		ExtraHeaders: map[string]string{
-			"Depth": depth,
+			"Depth": "0",
 		},
-		NoRedirect: true,
+		CheckRedirect: f.preserveMethodRedirect,
 	}
 	if f.hasOCMD5 || f.hasOCSHA1 {
 		opts.Body = bytes.NewBuffer(owncloudProps)
+	} else if f.useStandardProps {
+		opts.Body = bytes.NewBuffer(standardProps)
 	}
+	// Note: According to WebDAV RFC 4918, empty PROPFIND body defaults to allprop
 	var result api.Multistatus
 	var resp *http.Response
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallXML(ctx, &opts, nil, &result)
+		var attempt api.Multistatus
+		resp, err = f.callPropfind(ctx, &opts, &attempt)
+		if err == nil {
+			result = attempt
+		}
 		return f.shouldRetry(ctx, resp, err)
 	})
 	if apiErr, ok := err.(*api.Error); ok {
 		// does not exist
 		switch apiErr.StatusCode {
 		case http.StatusNotFound:
-			if f.retryWithZeroDepth && depth != "0" {
-				return f.readMetaDataForPath(ctx, path, "0")
-			}
 			return nil, fs.ErrorObjectNotFound
 		case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther:
 			// Some sort of redirect - go doesn't deal with these properly (it resets
@@ -420,7 +477,7 @@ func (f *Fs) filePath(file string) string {
 	if f.opt.Enc != encoder.EncodeZero {
 		subPath = f.opt.Enc.FromStandardPath(subPath)
 	}
-	return rest.URLPathEscape(subPath)
+	return rest.URLPathEscapeAll(subPath)
 }
 
 // dirPath returns a directory path (f.root, dir)
@@ -476,13 +533,14 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	}
 
 	f := &Fs{
-		name:        name,
-		root:        root,
-		opt:         *opt,
-		endpoint:    u,
-		endpointURL: u.String(),
-		pacer:       fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(opt.PacerMinSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
-		precision:   fs.ModTimeNotSupported,
+		name:             name,
+		root:             root,
+		opt:              *opt,
+		endpoint:         u,
+		endpointURL:      u.String(),
+		pacer:            fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(opt.PacerMinSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
+		precision:        fs.ModTimeNotSupported,
+		authSingleflight: new(singleflight.Group),
 	}
 
 	var client *http.Client
@@ -506,6 +564,17 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 			rt: ntlmssp.Negotiator{RoundTripper: t},
 		}
 	}
+	// Refuse redirects that downgrade HTTPS to plaintext HTTP and
+	// don't send the configured headers to another host.
+	//
+	// The auth_redirect option bypasses this for the requests it applies
+	// to as it is an explicit opt-in to keep credentials across redirects.
+	headerNames := make([]string, 0, len(opt.Headers)/2)
+	for i := 0; i < len(opt.Headers); i += 2 {
+		headerNames = append(headerNames, opt.Headers[i])
+	}
+	f.checkRedirect = rest.StripHeadersOnCrossHostRedirectFn(headerNames...)
+	client.CheckRedirect = f.checkRedirect
 	f.srv = rest.NewClient(client).SetRoot(u.String())
 
 	f.features = (&fs.Features{
@@ -515,7 +584,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		f.srv.SetUserPass(opt.User, opt.Pass)
 	} else if opt.BearerToken != "" {
 		f.setBearerToken(opt.BearerToken)
-	} else if f.opt.BearerTokenCommand != "" {
+	} else if len(f.opt.BearerTokenCommand) != 0 {
 		err = f.fetchAndSetBearerToken()
 		if err != nil {
 			return nil, err
@@ -531,6 +600,10 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	}
 	if !f.findHeader(opt.Headers, "Referer") {
 		f.srv.SetHeader("Referer", u.String())
+	}
+	// Nextcloud public shares reject requests without this header
+	if opt.Vendor == "nextcloud" && strings.Contains(u.Path, "public.php/dav/files") && !f.findHeader(opt.Headers, "X-Requested-With") {
+		f.srv.SetHeader("X-Requested-With", "XMLHttpRequest")
 	}
 
 	if root != "" && !rootIsDir {
@@ -562,12 +635,11 @@ func (f *Fs) setBearerToken(token string) {
 }
 
 // fetch the bearer token using the command
-func (f *Fs) fetchBearerToken(cmd string) (string, error) {
+func (f *Fs) fetchBearerToken(cmd fs.SpaceSepList) (string, error) {
 	var (
-		args   = strings.Split(cmd, " ")
 		stdout bytes.Buffer
 		stderr bytes.Buffer
-		c      = exec.Command(args[0], args[1:]...)
+		c      = exec.Command(cmd[0], cmd[1:]...)
 	)
 	c.Stdout = &stdout
 	c.Stderr = &stderr
@@ -583,6 +655,16 @@ func (f *Fs) fetchBearerToken(cmd string) (string, error) {
 		return "", fmt.Errorf("failed to get bearer token using %q: %s: %w", f.opt.BearerTokenCommand, stderrString, err)
 	}
 	return stdoutString, nil
+}
+
+// preserveMethodRedirect is an http.Client.CheckRedirect function
+// which applies f.checkRedirect and then preserves the original HTTP
+// method like rest.PreserveMethodRedirectFn.
+func (f *Fs) preserveMethodRedirect(req *http.Request, via []*http.Request) error {
+	if err := f.checkRedirect(req, via); err != nil {
+		return err
+	}
+	return rest.PreserveMethodRedirectFn(req, via)
 }
 
 // Adds the configured headers to the request if any
@@ -607,15 +689,18 @@ func (f *Fs) findHeader(headers fs.CommaSepList, find string) bool {
 
 // fetch the bearer token and set it if successful
 func (f *Fs) fetchAndSetBearerToken() error {
-	if f.opt.BearerTokenCommand == "" {
-		return nil
-	}
-	token, err := f.fetchBearerToken(f.opt.BearerTokenCommand)
-	if err != nil {
-		return err
-	}
-	f.setBearerToken(token)
-	return nil
+	_, err, _ := f.authSingleflight.Do("bearerToken", func() (any, error) {
+		if len(f.opt.BearerTokenCommand) == 0 {
+			return nil, nil
+		}
+		token, err := f.fetchBearerToken(f.opt.BearerTokenCommand)
+		if err != nil {
+			return nil, err
+		}
+		f.setBearerToken(token)
+		return nil, nil
+	})
+	return err
 }
 
 // The WebDAV url can optionally be suffixed with a path. This suffix needs to be ignored for determining the temporary upload directory of chunks.
@@ -651,6 +736,7 @@ func (f *Fs) setQuirks(ctx context.Context, vendor string) error {
 		f.propsetMtime = true
 		f.hasOCSHA1 = true
 		f.canChunk = true
+		f.canRecalcHash = true
 
 		if f.opt.ChunkSize == 0 {
 			fs.Logf(nil, "Chunked uploads are disabled because nextcloud_chunk_size is set to 0")
@@ -705,6 +791,7 @@ func (f *Fs) setQuirks(ctx context.Context, vendor string) error {
 		f.precision = time.Second
 		f.useOCMtime = true
 	case "other":
+		f.useStandardProps = true
 	default:
 		fs.Debugf(f, "Unknown vendor %q", vendor)
 	}
@@ -753,9 +840,19 @@ var owncloudProps = []byte(`<?xml version="1.0"?>
   <d:getlastmodified />
   <d:getcontentlength />
   <d:resourcetype />
-  <d:getcontenttype />
   <oc:checksums />
   <oc:permissions />
+ </d:prop>
+</d:propfind>
+`)
+
+var standardProps = []byte(`<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:">
+ <d:prop>
+  <d:displayname/>
+  <d:getlastmodified/>
+  <d:getcontentlength/>
+  <d:resourcetype/>
  </d:prop>
 </d:propfind>
 `)
@@ -778,14 +875,22 @@ func (f *Fs) listAll(ctx context.Context, dir string, directoriesOnly bool, file
 		ExtraHeaders: map[string]string{
 			"Depth": depth,
 		},
+		AuthRedirect: f.opt.AuthRedirect, // allow redirects to preserve Auth
 	}
 	if f.hasOCMD5 || f.hasOCSHA1 {
 		opts.Body = bytes.NewBuffer(owncloudProps)
+	} else if f.useStandardProps {
+		opts.Body = bytes.NewBuffer(standardProps)
 	}
+	// Note: According to WebDAV RFC 4918, empty PROPFIND body defaults to `allprop`
 	var result api.Multistatus
 	var resp *http.Response
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallXML(ctx, &opts, nil, &result)
+		var attempt api.Multistatus
+		resp, err = f.callPropfind(ctx, &opts, &attempt)
+		if err == nil {
+			result = attempt
+		}
 		return f.shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
@@ -882,30 +987,56 @@ func (f *Fs) listAll(ctx context.Context, dir string, directoriesOnly bool, file
 // This should return ErrDirNotFound if the directory isn't
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
+	return list.WithListP(ctx, dir, f)
+}
+
+// ListP lists the objects and directories of the Fs starting
+// from dir non recursively into out.
+//
+// dir should be "" to start from the root, and should not
+// have trailing slashes.
+//
+// This should return ErrDirNotFound if the directory isn't
+// found.
+//
+// It should call callback for each tranche of entries read.
+// These need not be returned in any particular order.  If
+// callback returns an error then the listing will stop
+// immediately.
+func (f *Fs) ListP(ctx context.Context, dir string, callback fs.ListRCallback) error {
+	list := list.NewHelper(callback)
 	var iErr error
-	_, err = f.listAll(ctx, dir, false, false, defaultDepth, func(remote string, isDir bool, info *api.Prop) bool {
+	_, err := f.listAll(ctx, dir, false, false, defaultDepth, func(remote string, isDir bool, info *api.Prop) bool {
 		if isDir {
 			d := fs.NewDir(remote, time.Time(info.Modified))
 			// .SetID(info.ID)
 			// FIXME more info from dir? can set size, items?
-			entries = append(entries, d)
+			err := list.Add(d)
+			if err != nil {
+				iErr = err
+				return true
+			}
 		} else {
 			o, err := f.newObjectWithInfo(ctx, remote, info)
 			if err != nil {
 				iErr = err
 				return true
 			}
-			entries = append(entries, o)
+			err = list.Add(o)
+			if err != nil {
+				iErr = err
+				return true
+			}
 		}
 		return false
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if iErr != nil {
-		return nil, iErr
+		return iErr
 	}
-	return entries, nil
+	return list.Flush()
 }
 
 // Creates from the parameters passed in a half finished Object which
@@ -1059,11 +1190,7 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) error {
 		// does not really exist so we perform an extra check here.
 		// Only the existence is checked, all other errors must be
 		// ignored here to make the rclone test suite pass.
-		depth := defaultDepth
-		if f.retryWithZeroDepth {
-			depth = "0"
-		}
-		_, err := f.readMetaDataForPath(ctx, dir, depth)
+		_, err := f.readMetaDataForPath(ctx, dir)
 		if err == fs.ErrorObjectNotFound {
 			return fs.ErrorDirNotFound
 		}
@@ -1372,7 +1499,7 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 	if o.hasMetaData {
 		return nil
 	}
-	info, err := o.fs.readMetaDataForPath(ctx, o.remote, defaultDepth)
+	info, err := o.fs.readMetaDataForPath(ctx, o.remote)
 	if err != nil {
 		return err
 	}
@@ -1421,11 +1548,16 @@ var owncloudPropsetWithChecksum = `<?xml version="1.0" encoding="utf-8" ?>
 // SetModTime sets the modification time of the local fs object
 func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	if o.fs.propsetMtime {
+		// Setting the modification time discards the stored
+		// checksums so they are set again in the same request.
+		// Servers which can't do that recalculate them afterwards.
 		checksums := ""
-		if o.fs.hasOCSHA1 && o.sha1 != "" {
-			checksums = "SHA1:" + o.sha1
-		} else if o.fs.hasOCMD5 && o.md5 != "" {
-			checksums = "MD5:" + o.md5
+		if !o.fs.canRecalcHash {
+			if o.fs.hasOCSHA1 && o.sha1 != "" {
+				checksums = "SHA1:" + o.sha1
+			} else if o.fs.hasOCMD5 && o.md5 != "" {
+				checksums = "MD5:" + o.md5
+			}
 		}
 
 		opts := rest.Opts{
@@ -1455,8 +1587,17 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 		}
 		// FIXME check if response is valid
 		if len(result.Responses) == 1 && result.Responses[0].Props.StatusOK() {
-			// update cached modtime
-			o.modTime = modTime
+			// update cached modtime - the PROPPATCH sets it with
+			// second precision so truncate here too to keep the
+			// in-memory modtime identical to the one a fresh
+			// listing returns
+			o.modTime = modTime.Truncate(time.Second)
+			if o.fs.canRecalcHash && (o.sha1 != "" || o.md5 != "") {
+				err = o.recalculateHash(ctx)
+				if err != nil {
+					return fmt.Errorf("couldn't restore checksum after setting modified time: %w", err)
+				}
+			}
 			return nil
 		}
 		// got an error, but it's possible it actually worked, so double-check
@@ -1493,6 +1634,18 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	}
 	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.srv.Call(ctx, &opts)
+		if err == nil {
+			err = rest.CheckContentRange(resp, options, o.size)
+			if err != nil {
+				if resp != nil && resp.Body != nil {
+					_ = resp.Body.Close()
+				}
+				if errors.Is(err, fs.ErrorRangeIgnored) {
+					return false, err
+				}
+				return true, fserrors.RetryError(err)
+			}
+		}
 		return o.fs.shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
@@ -1543,7 +1696,54 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	}
 	// read metadata from remote
 	o.hasMetaData = false
-	return o.readMetaData(ctx)
+	err = o.readMetaData(ctx)
+	if err != nil {
+		return err
+	}
+	// The server only stores a checksum supplied with the upload,
+	// so ask the server to calculate one if it is missing.
+	if o.fs.canRecalcHash && o.sha1 == "" && o.md5 == "" {
+		err = o.recalculateHash(ctx)
+		if err != nil {
+			return fmt.Errorf("couldn't calculate checksum after upload: %w", err)
+		}
+	}
+	return nil
+}
+
+// recalculateHash asks the server to calculate and store the checksum
+// of the object's contents, updating the cached hash from the result.
+//
+// This uses the nextcloud PATCH extension with the X-Recalculate-Hash
+// header which returns the checksum in the OC-Checksum header.
+func (o *Object) recalculateHash(ctx context.Context) error {
+	hashName := ""
+	if o.fs.hasOCSHA1 {
+		hashName = "sha1"
+	} else if o.fs.hasOCMD5 {
+		hashName = "md5"
+	} else {
+		return nil
+	}
+	opts := rest.Opts{
+		Method:       "PATCH",
+		Path:         o.filePath(),
+		NoResponse:   true,
+		ExtraHeaders: map[string]string{"X-Recalculate-Hash": hashName},
+	}
+	var resp *http.Response
+	err := o.fs.pacer.Call(func() (bool, error) {
+		var err error
+		resp, err = o.fs.srv.Call(ctx, &opts)
+		return o.fs.shouldRetry(ctx, resp, err)
+	})
+	if err != nil {
+		return err
+	}
+	hashes := (&api.Prop{Checksums: []string{resp.Header.Get("OC-Checksum")}}).Hashes()
+	o.sha1 = hashes[hash.SHA1]
+	o.md5 = hashes[hash.MD5]
+	return nil
 }
 
 func (o *Object) extraHeaders(ctx context.Context, src fs.ObjectInfo) map[string]string {
@@ -1583,7 +1783,7 @@ func (o *Object) updateSimple(ctx context.Context, body io.Reader, getBody func(
 		GetBody:       getBody,
 		Body:          body,
 		NoResponse:    true,
-		ContentLength: &size, // FIXME this isn't necessary with owncloud - See https://github.com/nextcloud/nextcloud-snap/issues/365
+		ContentLength: &size, // FIXME this isn't necessary with owncloud - See https://github.com/nextcloud-snap/nextcloud-snap/issues/365
 		ContentType:   contentType,
 		Options:       options,
 		ExtraHeaders:  extraHeaders,
@@ -1628,6 +1828,7 @@ var (
 	_ fs.Copier      = (*Fs)(nil)
 	_ fs.Mover       = (*Fs)(nil)
 	_ fs.DirMover    = (*Fs)(nil)
+	_ fs.ListPer     = (*Fs)(nil)
 	_ fs.Abouter     = (*Fs)(nil)
 	_ fs.Object      = (*Object)(nil)
 )

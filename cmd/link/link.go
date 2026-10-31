@@ -1,4 +1,4 @@
-﻿// Package link provides the link command.
+// Package link provides the link command.
 package link
 
 import (
@@ -29,7 +29,7 @@ var commandDefinition = &cobra.Command{
 	Short: `Generate public link to file/folder.`,
 	Long: `Create, retrieve or remove a public link to the given file or folder.
 
-` + "```sh" + `
+` + "```console" + `
 rclone link remote:path/to/file
 rclone link remote:path/to/folder/
 rclone link --unlink remote:path/to/folder/

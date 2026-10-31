@@ -1,4 +1,4 @@
-﻿package cmd
+package cmd
 
 import (
 	"context"
@@ -292,6 +292,10 @@ func showBackend(name string) {
 			continue
 		}
 		done[opt.Name] = struct{}{}
+		// Skip options hidden from both the command line and the configurator
+		if opt.Hide&fs.OptionHideBoth == fs.OptionHideBoth {
+			continue
+		}
 		if opt.Advanced {
 			advancedOptions = append(advancedOptions, opt)
 		} else {
@@ -343,9 +347,12 @@ func showBackend(name string) {
 					fmt.Printf("- Examples:\n")
 				}
 				for _, ex := range opt.Examples {
-					fmt.Printf("    - %s\n", quoteString(ex.Value))
+					fmt.Printf("  - %s\n", quoteString(ex.Value))
 					for line := range strings.SplitSeq(ex.Help, "\n") {
-						fmt.Printf("        - %s\n", line)
+						fmt.Printf("    - %s\n", line)
+					}
+					if ex.Provider != "" {
+						fmt.Printf("    - Provider: %s\n", ex.Provider)
 					}
 				}
 			}

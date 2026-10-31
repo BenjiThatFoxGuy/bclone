@@ -1,4 +1,4 @@
-﻿//go:build ignore
+//go:build ignore
 
 // Cross compile rclone - in go because I hate bash ;-)
 
@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -25,6 +26,7 @@ var (
 	// Flags
 	debug           = flag.Bool("d", false, "Print commands instead of running them")
 	parallel        = flag.Int("parallel", runtime.NumCPU(), "Number of commands to run in parallel")
+	buildParallel   = flag.Int("build-p", 0, "Value to pass to go build -p (0 means NumCPU/parallel)")
 	copyAs          = flag.String("release", "", "Make copies of the releases with this name")
 	gitLog          = flag.String("git-log", "", "git log to include as well")
 	include         = flag.String("include", "^.*$", "os/arch regexp to include")
@@ -74,6 +76,7 @@ var osarches = []string{
 	"plan9/amd64",
 	"solaris/amd64",
 	// "js/wasm", // Rclone is too big for js/wasm until https://github.com/golang/go/issues/64856 is fixed
+    "aix/ppc64",
 }
 
 // Special environment flags for a given arch
@@ -245,7 +248,7 @@ func generateResourceWindows(version, arch string) func() {
 func compileArch(version, goos, goarch, dir string) bool {
 	log.Printf("Compiling %s/%s into %s", goos, goarch, dir)
 	goarchBase := stripVersion(goarch)
-	output := filepath.Join(dir, "rclone")
+	output := filepath.Join(dir, "bclone")
 	if goos == "windows" {
 		output += ".exe"
 		if cleanupFn := generateResourceWindows(version, goarchBase); cleanupFn != nil {
@@ -260,6 +263,7 @@ func compileArch(version, goos, goarch, dir string) bool {
 		"go", "build",
 		"--ldflags", "-s -X github.com/rclone/rclone/fs.Version=" + version,
 		"-trimpath",
+		"-p", strconv.Itoa(*buildParallel),
 		"-o", output,
 		"-tags", *tags,
 	}
@@ -358,13 +362,23 @@ func compile(version string) {
 	if err != nil {
 		log.Fatalf("Bad -exclude regexp: %v", err)
 	}
-	compiled := 0
-	var failuresMu sync.Mutex
-	var failures []string
+	var selected []string
 	for _, osarch := range osarches {
 		if excludeRe.MatchString(osarch) || !includeRe.MatchString(osarch) {
 			continue
 		}
+		selected = append(selected, osarch)
+	}
+	// Each go build compiles -p packages at once (defaulting to
+	// NumCPU) so share the CPUs between the concurrent builds to
+	// avoid overloading the machine.
+	if *buildParallel <= 0 {
+		*buildParallel = max(1, runtime.NumCPU()/max(1, min(*parallel, len(selected))))
+	}
+	compiled := 0
+	var failuresMu sync.Mutex
+	var failures []string
+	for _, osarch := range selected {
 		parts := strings.Split(osarch, "/")
 		if len(parts) != 2 {
 			log.Fatalf("Bad osarch %q", osarch)
@@ -374,7 +388,7 @@ func compile(version string) {
 		if goos == "darwin" {
 			userGoos = "osx"
 		}
-		dir := filepath.Join("rclone-" + version + "-" + userGoos + "-" + goarch)
+		dir := filepath.Join("bclone-" + version + "-" + userGoos + "-" + goarch)
 		run <- func() {
 			if !compileArch(version, goos, goarch, dir) {
 				failuresMu.Lock()
@@ -406,7 +420,7 @@ func main() {
 		run("mkdir", "build")
 	}
 	chdir("build")
-	err := os.WriteFile("version.txt", []byte(fmt.Sprintf("rclone %s\n", version)), 0666)
+	err := os.WriteFile("version.txt", []byte(fmt.Sprintf("bclone %s\n", version)), 0666)
 	if err != nil {
 		log.Fatalf("Couldn't write version.txt: %v", err)
 	}

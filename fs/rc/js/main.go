@@ -1,4 +1,4 @@
-﻿// Rclone as a wasm library
+// Rclone as a wasm library
 //
 // This library exports the core rc functionality
 

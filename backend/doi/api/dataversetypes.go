@@ -1,4 +1,4 @@
-﻿// Type definitions specific to Dataverse
+// Type definitions specific to Dataverse
 
 package api
 

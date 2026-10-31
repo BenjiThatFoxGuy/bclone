@@ -1,4 +1,4 @@
-﻿// Package crypt provides wrappers for Fs and Object which implement encryption
+// Package crypt provides wrappers for Fs and Object which implement encryption
 package crypt
 
 import (
@@ -923,28 +923,30 @@ func (f *Fs) ChangeNotify(ctx context.Context, notifyFunc func(string, fs.EntryT
 var commandHelp = []fs.CommandHelp{
 	{
 		Name:  "encode",
-		Short: "Encode the given filename(s)",
+		Short: "Encode the given filename(s).",
 		Long: `This encodes the filenames given as arguments returning a list of
 strings of the encoded results.
 
-Usage Example:
+Usage examples:
 
-    rclone backend encode crypt: file1 [file2...]
-    rclone rc backend/command command=encode fs=crypt: file1 [file2...]
-`,
+` + "```console" + `
+rclone backend encode crypt: file1 [file2...]
+rclone rc backend/command command=encode fs=crypt: file1 [file2...]
+` + "```",
 	},
 	{
 		Name:  "decode",
-		Short: "Decode the given filename(s)",
+		Short: "Decode the given filename(s).",
 		Long: `This decodes the filenames given as arguments returning a list of
 strings of the decoded results. It will return an error if any of the
 inputs are invalid.
 
-Usage Example:
+Usage examples:
 
-    rclone backend decode crypt: encryptedfile1 [encryptedfile2...]
-    rclone rc backend/command command=decode fs=crypt: encryptedfile1 [encryptedfile2...]
-`,
+` + "```console" + `
+rclone backend decode crypt: encryptedfile1 [encryptedfile2...]
+rclone rc backend/command command=decode fs=crypt: encryptedfile1 [encryptedfile2...]
+` + "```",
 	},
 }
 
@@ -1177,6 +1179,11 @@ func (o *ObjectInfo) Size() int64 {
 // Hash returns the selected checksum of the file
 // If no checksum is available it returns ""
 func (o *ObjectInfo) Hash(ctx context.Context, hash hash.Type) (string, error) {
+	// If the data is unchanged then the hash of the source is the
+	// hash of the object which will be uploaded
+	if o.f.opt.NoDataEncryption {
+		return o.ObjectInfo.Hash(ctx, hash)
+	}
 	var srcObj fs.Object
 	var ok bool
 	// Get the underlying object if there is one
@@ -1190,7 +1197,7 @@ func (o *ObjectInfo) Hash(ctx context.Context, hash hash.Type) (string, error) {
 		return "", nil
 	}
 	// if this is wrapping a local object then we work out the hash
-	if srcObj.Fs().Features().IsLocal {
+	if srcObj != nil && srcObj.Fs().Features().IsLocal {
 		// Read the data and encrypt it to calculate the hash
 		fs.Debugf(o, "Computing %v hash of encrypted source", hash)
 		return o.f.computeHashWithNonce(ctx, o.nonce, srcObj, hash)

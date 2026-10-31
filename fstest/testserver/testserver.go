@@ -1,4 +1,4 @@
-﻿// Package testserver starts and stops test servers if required
+// Package testserver starts and stops test servers if required
 package testserver
 
 import (
@@ -19,12 +19,15 @@ import (
 )
 
 var (
-	once      sync.Once
-	configDir string // where the config is stored
-	// Note of running servers
-	runningMu   sync.Mutex
-	running     = map[string]int{}
-	errNotFound = errors.New("command not found")
+	findConfigOnce sync.Once
+	configDir      string // where the config is stored
+
+	// trackedServers counts how many live Start/stop pairs this
+	// process holds for each remote. Used by CleanupAll to force-stop
+	// everything this process started even if individual stop
+	// functions never ran (e.g. on signal, panic, fs.Fatalf).
+	trackedMu      sync.Mutex
+	trackedServers = map[string]int{}
 )
 
 // Assume we are run somewhere within the rclone root
@@ -42,25 +45,26 @@ func findConfig() (string, error) {
 	return "", errors.New("couldn't find testserver config files - run from within rclone source")
 }
 
-// run the command returning the output and an error
-func run(name, command string) (out []byte, err error) {
-	cmdPath := filepath.Join(configDir, name)
-	fi, err := os.Stat(cmdPath)
-	if err != nil || fi.IsDir() {
-		return nil, errNotFound
-	}
-	cmd := exec.Command(cmdPath, command)
-	out, err = cmd.CombinedOutput()
-	if err != nil {
-		err = fmt.Errorf("failed to run %s %s\n%s: %w", cmdPath, command, string(out), err)
-	}
-	return out, err
+// returns path to a script to start this server
+func cmdPath(name string) string {
+	return filepath.Join(configDir, name)
 }
 
-// Check to see if the server is running
-func isRunning(name string) bool {
-	_, err := run(name, "status")
-	return err == nil
+// return true if the server with name has a start command
+func hasStartCommand(name string) bool {
+	fi, err := os.Stat(cmdPath(name))
+	return err == nil && !fi.IsDir()
+}
+
+// run the command returning the output and an error
+func run(name, command string) (out []byte, err error) {
+	script := cmdPath(name)
+	cmd := exec.Command(script, command)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		err = fmt.Errorf("failed to run %s %s\n%s: %w", script, command, string(out), err)
+	}
+	return out, err
 }
 
 // envKey returns the environment variable name to set name, key
@@ -71,8 +75,7 @@ func envKey(name, key string) string {
 // match a line of config var=value
 var matchLine = regexp.MustCompile(`^([a-zA-Z_]+)=(.*)$`)
 
-// Start the server and set its env vars
-// Call with the mutex held
+// Start the server and env vars so rclone can use it
 func start(name string) error {
 	fs.Logf(name, "Starting server")
 	out, err := run(name, "start")
@@ -144,82 +147,98 @@ func start(name string) error {
 	return fmt.Errorf("failed to connect to %q on %q", name, connect)
 }
 
-// Start starts the named test server which can be stopped by the
-// function returned.
-func Start(remoteName string) (fn func(), err error) {
-	if remoteName == "" {
-		// don't start the local backend
-		return func() {}, nil
+// Stops the named test server
+func stop(name string) {
+	fs.Logf(name, "Stopping server")
+	_, err := run(name, "stop")
+	if err != nil {
+		fs.Errorf(name, "Failed to stop server: %v", err)
 	}
-	parsed, err := fspath.Parse(remoteName)
+}
+
+// No server to stop so do nothing
+func stopNothing() {
+}
+
+// Start starts the test server for remoteName.
+//
+// This must be stopped by calling the function returned when finished.
+func Start(remote string) (fn func(), err error) {
+	// don't start the local backend
+	if remote == "" {
+		return stopNothing, nil
+	}
+	parsed, err := fspath.Parse(remote)
 	if err != nil {
 		return nil, err
 	}
 	name := parsed.ConfigString
+	// don't start the local backend
 	if name == "" {
-		// don't start the local backend
-		return func() {}, nil
+		return stopNothing, nil
 	}
 
 	// Make sure we know where the config is
-	once.Do(func() {
+	findConfigOnce.Do(func() {
 		configDir, err = findConfig()
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	runningMu.Lock()
-	defer runningMu.Unlock()
-
-	if running[name] <= 0 {
-		// if server isn't running check to see if this server has
-		// been started already but not by us and stop it if so
-		const maxTries = 10
-		for i := 1; i <= maxTries; i++ {
-			if os.Getenv(envKey(name, "type")) == "" && !isRunning(name) {
-				fs.Logf(name, "Stopped server")
-				break
-			}
-			if i != 1 {
-				time.Sleep(time.Second)
-				fs.Logf(name, "Attempting to stop %s try %d/%d", name, i, maxTries)
-			}
-			stop(name)
-		}
-		if !isRunning(name) {
-			err = start(name)
-			if err == errNotFound {
-				// if no file found then don't start or stop
-				return func() {}, nil
-			} else if err != nil {
-				return nil, err
-			}
-			running[name] = 0
-		} else {
-			running[name] = 1
-		}
+	// If remote has no start command then do nothing
+	if !hasStartCommand(name) {
+		return stopNothing, nil
 	}
-	running[name]++
 
+	// Start the server
+	err = start(name)
+	if err != nil {
+		return nil, err
+	}
+
+	trackedMu.Lock()
+	trackedServers[name]++
+	trackedMu.Unlock()
+
+	// And return a function to stop it. The returned closure is
+	// idempotent: calling it twice (e.g. by defer and by CleanupAll)
+	// only decrements once.
+	var once sync.Once
 	return func() {
-		runningMu.Lock()
-		defer runningMu.Unlock()
-		stop(name)
+		once.Do(func() {
+			trackedMu.Lock()
+			if trackedServers[name] > 0 {
+				trackedServers[name]--
+			}
+			trackedMu.Unlock()
+			stop(name)
+		})
 	}, nil
 
 }
 
-// Stops the named test server
-// Call with the mutex held
-func stop(name string) {
-	running[name]--
-	if running[name] <= 0 {
-		_, err := run(name, "stop")
-		if err != nil {
-			fs.Errorf(name, "Failed to stop server: %v", err)
+// CleanupAll force-stops every server this process ever started via
+// Start, regardless of refcount. Safe to call multiple times and from
+// any goroutine. Intended for end-of-run or signal-handler cleanup in
+// long-running test drivers like fstest/test_all.
+func CleanupAll() {
+	trackedMu.Lock()
+	names := make([]string, 0, len(trackedServers))
+	for name, count := range trackedServers {
+		if count > 0 {
+			names = append(names, name)
 		}
-		running[name] = 0
-		fs.Logf(name, "Stopping server")
+	}
+	for _, name := range names {
+		trackedServers[name] = 0
+	}
+	trackedMu.Unlock()
+
+	for _, name := range names {
+		fs.Logf(name, "Force-stopping test server")
+		if _, err := run(name, "force-stop"); err != nil {
+			fs.Errorf(name, "Failed to force-stop test server: %v", err)
+		}
 	}
 }

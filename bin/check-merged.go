@@ -1,4 +1,4 @@
-﻿//go:build ignore
+//go:build ignore
 
 // Attempt to work out if branches have already been merged
 package main

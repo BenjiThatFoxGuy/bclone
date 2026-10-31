@@ -1,4 +1,4 @@
-﻿// Package hash provides hash utilities for Fs.
+// Package hash provides hash utilities for Fs.
 package hash
 
 import (
@@ -102,7 +102,13 @@ var (
 
 	// XXH128 indicates XXH128 support, also known as XXH3-128, a variant of xxHash
 	XXH128 Type
+
+	// CRC32C indicates CRC-32C (Castagnoli) support
+	CRC32C Type
 )
+
+// castagnoliTable is the CRC-32C table (hardware accelerated where available)
+var castagnoliTable = crc32.MakeTable(crc32.Castagnoli)
 
 type xxh128Hasher struct {
 	xxh3.Hasher
@@ -112,6 +118,11 @@ type xxh128Hasher struct {
 func (h *xxh128Hasher) Sum(b []byte) []byte {
 	buf := h.Sum128().Bytes()
 	return buf[:]
+}
+
+// Size returns the number of bytes Sum will return.
+func (h *xxh128Hasher) Size() int {
+	return 16
 }
 
 func init() {
@@ -124,6 +135,7 @@ func init() {
 	BLAKE3 = RegisterHash("blake3", "BLAKE3", 64, func() hash.Hash { return blake3.New() })
 	XXH3 = RegisterHash("xxh3", "XXH3", 16, func() hash.Hash { return xxh3.New() })
 	XXH128 = RegisterHash("xxh128", "XXH128", 32, func() hash.Hash { return &xxh128Hasher{} })
+	CRC32C = RegisterHash("crc32c", "CRC-32C", 8, func() hash.Hash { return crc32.New(castagnoliTable) })
 }
 
 // Supported returns a set of all the supported hashes by
@@ -225,7 +237,7 @@ func fromTypes(set Set) (map[Type]hash.Hash, error) {
 // single multiwriter, where one write will update all
 // the hashers.
 func toMultiWriter(h map[Type]hash.Hash) io.Writer {
-	// Convert to to slice
+	// Convert to slice
 	var w = make([]io.Writer, 0, len(h))
 	for _, v := range h {
 		w = append(w, v)

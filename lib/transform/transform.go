@@ -1,4 +1,4 @@
-﻿// Package transform holds functions for path name transformations
+// Package transform holds functions for path name transformations
 //
 //go:generate go run gen_help.go transform.md
 package transform
@@ -23,7 +23,9 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/lib/encoder"
+	"golang.org/x/text/cases"
 	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/language"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -165,13 +167,13 @@ func transformPathSegment(s string, t transform) (string, error) {
 		if err != nil {
 			return s, err
 		}
-		return truncateChars(s, max, false), nil
+		return truncateChars(s, max, false)
 	case ConvTruncateKeepExtension:
 		max, err := strconv.Atoi(t.value)
 		if err != nil {
 			return s, err
 		}
-		return truncateChars(s, max, true), nil
+		return truncateChars(s, max, true)
 	case ConvTruncateBytes:
 		max, err := strconv.Atoi(t.value)
 		if err != nil {
@@ -217,7 +219,8 @@ func transformPathSegment(s string, t transform) (string, error) {
 	case ConvUppercase:
 		return strings.ToUpper(s), nil
 	case ConvTitlecase:
-		return strings.ToTitle(s), nil
+		// A Caser is not safe for concurrent use, so make one per call.
+		return cases.Title(language.Und).String(s), nil
 	case ConvASCII:
 		return toASCII(s), nil
 	case ConvURL:
@@ -266,19 +269,23 @@ func splitExtension(remote string) (base, exts string) {
 	return base, exts
 }
 
-func truncateChars(s string, max int, keepExtension bool) string {
+func truncateChars(s string, max int, keepExtension bool) (string, error) {
 	if max <= 0 {
-		return s
+		return s, nil
 	}
 	if utf8.RuneCountInString(s) <= max {
-		return s
+		return s, nil
 	}
 	exts := ""
 	if keepExtension {
 		s, exts = splitExtension(s)
 	}
+	keep := max - utf8.RuneCountInString(exts)
+	if keep <= 0 {
+		return "", errors.New("extension is longer than the truncation limit")
+	}
 	runes := []rune(s)
-	return string(runes[:max-utf8.RuneCountInString(exts)]) + exts
+	return string(runes[:keep]) + exts, nil
 }
 
 // truncateBytes is like truncateChars but counts the number of bytes, not UTF-8 characters

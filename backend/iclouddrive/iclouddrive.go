@@ -1,4 +1,4 @@
-﻿//go:build !plan9 && !solaris
+//go:build !plan9 && !solaris
 
 // Package iclouddrive implements the iCloud Drive backend
 package iclouddrive
@@ -9,7 +9,6 @@ import (
 	"path"
 
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -17,8 +16,6 @@ import (
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configmap"
-	"github.com/rclone/rclone/fs/config/configstruct"
-	"github.com/rclone/rclone/fs/config/obscure"
 	"github.com/rclone/rclone/fs/fserrors"
 
 	"github.com/rclone/rclone/backend/iclouddrive/api"
@@ -26,6 +23,8 @@ import (
 	"github.com/rclone/rclone/lib/dircache"
 	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/pacer"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 /*
@@ -52,11 +51,13 @@ const (
 type Options struct {
 	AppleID    string               `config:"apple_id"`
 	Password   string               `config:"password"`
-	Photos     bool                 `config:"photos"`
 	TrustToken string               `config:"trust_token"`
 	Cookies    string               `config:"cookies"`
 	ClientID   string               `config:"client_id"`
 	Enc        encoder.MultiEncoder `config:"encoding"`
+
+	PhotosStripOriginalSuffix bool `config:"photos_strip_original_suffix"`
+	PhotosLowercaseExtension  bool `config:"photos_lowercase_extension"`
 }
 
 // Fs represents a remote icloud drive
@@ -65,6 +66,7 @@ type Fs struct {
 	root     string // the path we are working on.
 	rootID   string
 	opt      Options            // parsed config options
+	m        configmap.Mapper   // config map for persisting auth state
 	features *fs.Features       // optional features
 	dirCache *dircache.DirCache // Map of directory path to directory id
 	icloud   *api.Client
@@ -93,7 +95,7 @@ func (f *Fs) findItem(ctx context.Context, dir string) (item *api.DriveItem, fou
 		item, resp, err = f.service.GetItemByPath(ctx, path.Join(f.root, dir))
 		return shouldRetry(ctx, resp, err)
 	}); err != nil {
-		if item == nil && resp.StatusCode == 404 {
+		if item == nil && resp != nil && resp.StatusCode == 404 {
 			return nil, false, nil
 		}
 		return nil, false, err
@@ -108,7 +110,8 @@ func (f *Fs) findLeafItem(ctx context.Context, pathID string, leaf string) (item
 		return nil, false, err
 	}
 	for _, item := range items {
-		if strings.EqualFold(item.FullName(), leaf) {
+		// iCloud returns file names in NFD Unicode normalization, so normalized to NFC for consistent comparison
+		if strings.EqualFold(norm.NFC.String(item.FullName()), leaf) {
 			return item, true, nil
 		}
 	}
@@ -343,7 +346,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 
 	var item *api.DriveItem
 	if err = f.pacer.Call(func() (bool, error) {
-		item, resp, err = f.service.UpdateFile(ctx, &r)
+		item, resp, err = f.service.UpdateFile(ctx, &r, api.ZoneFromDriveID(pathID))
 		return retryResultUnknown(ctx, resp, err)
 	}); err != nil {
 		return nil, err
@@ -677,49 +680,9 @@ func retryResultUnknown(ctx context.Context, resp *http.Response, err error) (bo
 
 // NewFs constructs an Fs from the path, container:path
 func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
-	// Parse config into Options struct
-	opt := new(Options)
-	err := configstruct.Set(m, opt)
+	icloud, opt, err := newICloudClient(ctx, name, m, api.WsDrive)
 	if err != nil {
 		return nil, err
-	}
-
-	if opt.Password != "" {
-		var err error
-		opt.Password, err = obscure.Reveal(opt.Password)
-		if err != nil {
-			return nil, fmt.Errorf("couldn't decrypt user password: %w", err)
-		}
-	}
-
-	if opt.TrustToken == "" {
-		return nil, fmt.Errorf("missing icloud trust token: try refreshing it with \"rclone config reconnect %s:\"", name)
-	}
-
-	cookies := ReadCookies(opt.Cookies)
-
-	callback := func(session *api.Session) {
-		m.Set(configCookies, session.GetCookieString())
-	}
-
-	icloud, err := api.New(
-		opt.AppleID,
-		opt.Password,
-		opt.TrustToken,
-		opt.ClientID,
-		cookies,
-		callback,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := icloud.Authenticate(ctx); err != nil {
-		return nil, err
-	}
-
-	if icloud.Session.Requires2FA() {
-		return nil, errors.New("trust token expired, please reauth")
 	}
 
 	root = strings.Trim(root, "/")
@@ -730,9 +693,11 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		icloud: icloud,
 		rootID: "FOLDER::com.apple.CloudDocs::root",
 		opt:    *opt,
+		m:      m,
 		pacer:  fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(minSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
 	}
 	f.features = (&fs.Features{
+		CaseInsensitive:         true, // names are matched with EqualFold, see findLeafItem
 		CanHaveEmptyDirectories: true,
 		PartialUploads:          false,
 	}).Fill(ctx, f)
@@ -988,7 +953,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	// Create document
 	var uploadInfo *api.UploadResponse
 	if err = o.fs.pacer.Call(func() (bool, error) {
-		uploadInfo, resp, err = o.fs.service.CreateUpload(ctx, size, name)
+		uploadInfo, resp, err = o.fs.service.CreateUpload(ctx, size, name, api.ZoneFromDriveID(dirID))
 		return ignoreResultUnknown(ctx, resp, err)
 	}); err != nil {
 		return err
@@ -1027,7 +992,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	// Update metadata
 	var item *api.DriveItem
 	if err = o.fs.pacer.Call(func() (bool, error) {
-		item, resp, err = o.fs.service.UpdateFile(ctx, &r)
+		item, resp, err = o.fs.service.UpdateFile(ctx, &r, api.ZoneFromDriveID(dirID))
 		return ignoreResultUnknown(ctx, resp, err)
 	}); err != nil {
 		return err
@@ -1044,9 +1009,15 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	return nil
 }
 
+// Disconnect clears authentication state and removes disk caches
+func (f *Fs) Disconnect(ctx context.Context) error {
+	return disconnectClient(f.m, f.icloud)
+}
+
 // Check interfaces are satisfied
 var (
 	_ fs.Fs              = &Fs{}
+	_ fs.Disconnecter    = (*Fs)(nil)
 	_ fs.Mover           = (*Fs)(nil)
 	_ fs.Purger          = (*Fs)(nil)
 	_ fs.DirMover        = (*Fs)(nil)

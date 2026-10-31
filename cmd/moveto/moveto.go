@@ -1,4 +1,4 @@
-﻿// Package moveto provides the moveto command.
+// Package moveto provides the moveto command.
 package moveto
 
 import (
@@ -35,7 +35,7 @@ like the [move](/commands/rclone_move/) command.
 
 So
 
-` + "```sh" + `
+` + "```console" + `
 rclone moveto src dst
 ` + "```" + `
 

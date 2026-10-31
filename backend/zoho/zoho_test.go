@@ -1,4 +1,4 @@
-﻿// Test Zoho filesystem interface
+// Test Zoho filesystem interface
 package zoho_test
 
 import (

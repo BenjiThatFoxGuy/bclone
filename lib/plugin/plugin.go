@@ -1,4 +1,4 @@
-﻿//go:build (darwin || linux) && !gccgo
+//go:build (darwin || linux) && !gccgo
 
 package plugin
 

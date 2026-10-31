@@ -1,4 +1,4 @@
-﻿// Package gofile provides an interface to the Gofile
+// Package gofile provides an interface to the Gofile
 // object storage system.
 package gofile
 
@@ -194,8 +194,7 @@ var retryErrorCodes = []int{
 
 // Return true if the api error has the status given
 func isAPIErr(err error, status string) bool {
-	var apiErr api.Error
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[api.Error](err); ok {
 		return apiErr.Status == status
 	}
 	return false

@@ -1,4 +1,4 @@
-﻿// Package api has type definitions for pcloud
+// Package api has type definitions for pcloud
 //
 // Converted from the API docs with help from https://mholt.github.io/json-to-go/
 package api
@@ -221,4 +221,12 @@ type UserInfo struct {
 			DownloadDrive bool `json:"downloaddrive"`
 		} `json:"steps"`
 	} `json:"journey"`
+}
+
+// DiffResult is the response from /diff
+type DiffResult struct {
+	Result  int              `json:"result"`
+	DiffID  int64            `json:"diffid"`
+	Entries []map[string]any `json:"entries"`
+	Error   string           `json:"error"`
 }

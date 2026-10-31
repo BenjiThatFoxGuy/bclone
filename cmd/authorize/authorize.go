@@ -1,4 +1,4 @@
-﻿// Package authorize provides the authorize command.
+// Package authorize provides the authorize command.
 package authorize
 
 import (

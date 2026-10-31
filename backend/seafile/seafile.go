@@ -1,4 +1,4 @@
-﻿// Package seafile provides an interface to the Seafile storage system.
+// Package seafile provides an interface to the Seafile storage system.
 package seafile
 
 import (
@@ -30,6 +30,7 @@ import (
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/random"
 	"github.com/rclone/rclone/lib/rest"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -550,7 +551,6 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	o := &Object{
 		fs:            f,
 		libraryID:     libraryID,
-		id:            fileDetails.ID,
 		remote:        remote,
 		pathInLibrary: filePath,
 		modTime:       modTime,
@@ -1170,7 +1170,11 @@ func (f *Fs) mkLibrary(ctx context.Context, libraryName, password string) error 
 	return nil
 }
 
-// splitPath returns the library name and the full path inside the library
+// splitPath returns the library name and the full path inside the library.
+//
+// The path is returned in NFC: Seafile stores names in NFC whatever form it
+// is given but looks them up byte for byte. Library names are stored verbatim
+// so they are left untouched.
 func (f *Fs) splitPath(dir string) (library, folder string) {
 	library = f.libraryName
 	folder = dir
@@ -1181,6 +1185,7 @@ func (f *Fs) splitPath(dir string) (library, folder string) {
 		// Adds the root folder to the path to get a full path
 		folder = path.Join(f.rootDirectory, folder)
 	}
+	folder = norm.NFC.String(folder)
 	return
 }
 
@@ -1239,7 +1244,6 @@ func (f *Fs) buildDirEntries(parentPath, libraryID, parentPathInLibrary string, 
 		} else if entry.Type == api.FileTypeFile {
 			object := &Object{
 				fs:            f,
-				id:            entry.ID,
 				remote:        filePath,
 				pathInLibrary: filePathInLibrary,
 				size:          entry.Size,
@@ -1359,5 +1363,4 @@ var (
 	_ fs.UserInfoer   = &Fs{}
 	_ fs.Shutdowner   = &Fs{}
 	_ fs.Object       = &Object{}
-	_ fs.IDer         = &Object{}
 )

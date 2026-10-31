@@ -1,4 +1,4 @@
-﻿// Package dircache provides a simple cache for caching directory ID
+// Package dircache provides a simple cache for caching directory ID
 // to path lookups and the inverse.
 package dircache
 
@@ -360,9 +360,6 @@ func (dc *DirCache) RootParentID(ctx context.Context, create bool) (ID string, e
 		dc.rootParentID = rootParentID
 	} else if dc.rootID == dc.trueRootID {
 		return "", errors.New("is root directory")
-	}
-	if dc.rootParentID == "" {
-		return "", errors.New("internal error: didn't find rootParentID")
 	}
 	return dc.rootParentID, nil
 }

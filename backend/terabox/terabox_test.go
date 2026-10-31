@@ -1,4 +1,4 @@
-﻿// Test Terabox filesystem interface
+// Test Terabox filesystem interface
 package terabox_test
 
 import (

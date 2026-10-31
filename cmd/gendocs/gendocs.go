@@ -1,4 +1,4 @@
-﻿// Package gendocs provides the gendocs command.
+// Package gendocs provides the gendocs command.
 package gendocs
 
 import (

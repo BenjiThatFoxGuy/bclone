@@ -107,6 +107,75 @@ type Client struct {
 	mu           sync.Mutex
 	cachedBearer string
 	cachedExpiry int64
+
+	// Google answers 503 (and sometimes 500/429) when it wants clients to
+	// slow down, so a throttled response makes every request wait, not just
+	// the one that got it.
+	throttleMu    sync.Mutex
+	throttleUntil time.Time
+	throttleDelay time.Duration
+}
+
+// throttleMinDelay is the first back-off after a throttled response; it
+// doubles on each further one up to throttleMaxDelay
+var (
+	throttleMinDelay = time.Second
+	throttleMaxDelay = 30 * time.Second
+)
+
+// throttleRetries is how many times a throttled API call is retried
+const throttleRetries = 8
+
+// isThrottled reports whether status is Google asking the client to back off
+func isThrottled(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// waitThrottle blocks until any back-off in force has passed
+func (c *Client) waitThrottle(ctx context.Context) error {
+	c.throttleMu.Lock()
+	wait := time.Until(c.throttleUntil)
+	c.throttleMu.Unlock()
+	if wait <= 0 {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(wait):
+		return nil
+	}
+}
+
+// throttle starts or lengthens the shared back-off after a throttled
+// response, using the server's Retry-After when it sends one
+func (c *Client) throttle(resp *http.Response) {
+	c.throttleMu.Lock()
+	defer c.throttleMu.Unlock()
+	c.throttleDelay = min(max(c.throttleDelay*2, throttleMinDelay), throttleMaxDelay)
+	delay := c.throttleDelay
+	if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
+		delay = time.Duration(secs) * time.Second
+	}
+	if until := time.Now().Add(delay); until.After(c.throttleUntil) {
+		c.throttleUntil = until
+	}
+	debugLog("gotohp: %s throttled with status %d, backing off %v", resp.Request.URL, resp.StatusCode, delay)
+}
+
+// relax shortens the back-off after a successful response
+func (c *Client) relax() {
+	c.throttleMu.Lock()
+	c.throttleDelay /= 2
+	if c.throttleDelay < throttleMinDelay {
+		c.throttleDelay = 0
+	}
+	c.throttleMu.Unlock()
 }
 
 // NewClient parses and validates authRaw and prepares a Client. It performs
@@ -259,15 +328,33 @@ func (c *Client) getAuthToken(ctx context.Context) (token string, expiry int64, 
 
 // postProtobuf issues a POST with an application/x-protobuf body and
 // returns the (possibly gzip-decoded) response body.
-func (c *Client) postProtobuf(ctx context.Context, endpoint string, body []byte, extHeaders bool) ([]byte, error) {
+//
+// Throttled responses (see isThrottled) are retried after the shared
+// back-off, up to throttleRetries times.
+func (c *Client) postProtobuf(ctx context.Context, endpoint string, body []byte, extHeaders bool) (respBody []byte, err error) {
+	for try := 0; ; try++ {
+		if err := c.waitThrottle(ctx); err != nil {
+			return nil, err
+		}
+		var status int
+		respBody, status, err = c.postProtobufOnce(ctx, endpoint, body, extHeaders)
+		if err == nil || !isThrottled(status) || try >= throttleRetries {
+			return respBody, err
+		}
+	}
+}
+
+// postProtobufOnce makes a single attempt at postProtobuf, returning the
+// HTTP status (0 if no response was received)
+func (c *Client) postProtobufOnce(ctx context.Context, endpoint string, body []byte, extHeaders bool) ([]byte, int, error) {
 	debugLog("gotohp: POST %s (%d bytes)", endpoint, len(body))
 	bearer, err := c.bearerToken(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Accept-Language", c.language)
@@ -280,33 +367,52 @@ func (c *Client) postProtobuf(ctx context.Context, endpoint string, body []byte,
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("gotohp: request to %s failed: %w", endpoint, err)
+		return nil, 0, fmt.Errorf("gotohp: request to %s failed: %w", endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	respBody, err := readBody(resp)
 	if err != nil {
-		return nil, err
+		return nil, resp.StatusCode, err
 	}
 	debugLog("gotohp: POST %s -> %d (%d bytes response)", endpoint, resp.StatusCode, len(respBody))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("gotohp: request to %s failed with status %d: %s", endpoint, resp.StatusCode, respBody)
+	if isThrottled(resp.StatusCode) {
+		c.throttle(resp)
 	}
-	return respBody, nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, resp.StatusCode, fmt.Errorf("gotohp: request to %s failed with status %d: %s", endpoint, resp.StatusCode, respBody)
+	}
+	c.relax()
+	return respBody, resp.StatusCode, nil
 }
 
 // GetUploadToken obtains an upload token for a file of the given size/hash.
 // This is step 1 of the 3-step upload dance; the token must be redeemed via
 // UploadBytes and the byte stream's CommitToken finalized via CommitUpload,
 // or the bytes become an orphaned upload that never becomes a photo.
-func (c *Client) GetUploadToken(ctx context.Context, sha1Hash []byte, fileSize int64) (string, error) {
+func (c *Client) GetUploadToken(ctx context.Context, sha1Hash []byte, fileSize int64) (token string, err error) {
+	for try := 0; ; try++ {
+		if err := c.waitThrottle(ctx); err != nil {
+			return "", err
+		}
+		var status int
+		token, status, err = c.getUploadTokenOnce(ctx, sha1Hash, fileSize)
+		if err == nil || !isThrottled(status) || try >= throttleRetries {
+			return token, err
+		}
+	}
+}
+
+// getUploadTokenOnce makes a single attempt at GetUploadToken, returning the
+// HTTP status (0 if no response was received)
+func (c *Client) getUploadTokenOnce(ctx context.Context, sha1Hash []byte, fileSize int64) (string, int, error) {
 	bearer, err := c.bearerToken(ctx)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	body := EncodeGetUploadToken(fileSize)
 	req, err := http.NewRequestWithContext(ctx, "POST", c.uploadEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Accept-Language", c.language)
@@ -318,21 +424,25 @@ func (c *Client) GetUploadToken(ctx context.Context, sha1Hash []byte, fileSize i
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("gotohp: upload token request failed: %w", err)
+		return "", 0, fmt.Errorf("gotohp: upload token request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err = readBody(resp)
 	if err != nil {
-		return "", err
+		return "", resp.StatusCode, err
+	}
+	if isThrottled(resp.StatusCode) {
+		c.throttle(resp)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("gotohp: upload token request failed with status %d: %s", resp.StatusCode, body)
+		return "", resp.StatusCode, fmt.Errorf("gotohp: upload token request failed with status %d: %s", resp.StatusCode, body)
 	}
+	c.relax()
 	token := resp.Header.Get("X-GUploader-UploadID")
 	if token == "" {
-		return "", errors.New("gotohp: response missing X-GUploader-UploadID header")
+		return "", resp.StatusCode, errors.New("gotohp: response missing X-GUploader-UploadID header")
 	}
-	return token, nil
+	return token, resp.StatusCode, nil
 }
 
 // UploadBytes streams the content served by open (step 2) and returns the

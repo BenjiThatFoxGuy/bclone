@@ -1,4 +1,4 @@
-﻿// Package internal provides internal implementation for the info test command.
+// Package internal provides internal implementation for the info test command.
 package internal
 
 import (
@@ -36,7 +36,6 @@ var PositionList = []Position{PositionMiddle, PositionLeft, PositionRight}
 
 // ControlResult contains the result of a single character test
 type ControlResult struct {
-	Text       string `json:"-"`
 	WriteError map[Position]string
 	GetError   map[Position]string
 	InList     map[Position]Presence

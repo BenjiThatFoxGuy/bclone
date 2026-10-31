@@ -1,4 +1,4 @@
-﻿// Package vfsflags implements command line flags to set up a vfs
+// Package vfsflags implements command line flags to set up a vfs
 package vfsflags
 
 import (

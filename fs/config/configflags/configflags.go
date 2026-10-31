@@ -1,4 +1,4 @@
-﻿// Package configflags defines the flags used by rclone.  It is
+// Package configflags defines the flags used by rclone.  It is
 // decoupled into a separate package so it can be replaced.
 package configflags
 
@@ -59,23 +59,6 @@ func AddFlags(ci *fs.ConfigInfo, flagSet *pflag.FlagSet) {
 	flags.StringArrayVarP(flagSet, &headers, "header", "", nil, "Set HTTP header for all transactions", "Networking")
 	flags.StringArrayVarP(flagSet, &metadataSet, "metadata-set", "", nil, "Add metadata key=value when uploading", "Metadata")
 	flags.StringVarP(flagSet, &dscp, "dscp", "", "", "Set DSCP value to connections, value or name, e.g. CS1, LE, DF, AF21", "Networking")
-}
-
-// ParseHeaders converts the strings passed in via the header flags into HTTPOptions
-func ParseHeaders(headers []string) []*fs.HTTPOption {
-	opts := []*fs.HTTPOption{}
-	for _, header := range headers {
-		parts := strings.SplitN(header, ":", 2)
-		if len(parts) == 1 {
-			fs.Fatalf(nil, "Failed to parse '%s' as an HTTP header. Expecting a string like: 'Content-Encoding: gzip'", header)
-		}
-		option := &fs.HTTPOption{
-			Key:   strings.TrimSpace(parts[0]),
-			Value: strings.TrimSpace(parts[1]),
-		}
-		opts = append(opts, option)
-	}
-	return opts
 }
 
 // SetFlags sets flags which aren't part of the config system
@@ -153,13 +136,13 @@ func SetFlags(ci *fs.ConfigInfo) {
 
 	// Process --headers-upload, --headers-download, --headers
 	if len(uploadHeaders) != 0 {
-		ci.UploadHeaders = ParseHeaders(uploadHeaders)
+		ci.UploadHeaders = fs.MustParseHeaders(uploadHeaders)
 	}
 	if len(downloadHeaders) != 0 {
-		ci.DownloadHeaders = ParseHeaders(downloadHeaders)
+		ci.DownloadHeaders = fs.MustParseHeaders(downloadHeaders)
 	}
 	if len(headers) != 0 {
-		ci.Headers = ParseHeaders(headers)
+		ci.Headers = fs.MustParseHeaders(headers)
 	}
 
 	// Process --metadata-set

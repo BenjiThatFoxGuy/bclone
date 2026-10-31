@@ -1,4 +1,4 @@
-﻿//go:build snap
+//go:build snap
 
 package buildinfo
 

@@ -38,6 +38,9 @@ BETA_PATH := $(BRANCH_PATH)$(TAG)$(BETA_SUBDIR)
 BETA_URL := https://beta.rclone.org/$(BETA_PATH)/
 BETA_UPLOAD_ROOT := beta.rclone.org:
 BETA_UPLOAD := $(BETA_UPLOAD_ROOT)/$(BETA_PATH)
+# Update the beta site's directory listings after an upload - add
+# --changed for the uploaded directories
+BETA_INDEX := --config bin/ci.rclone.conf -v index $(BETA_UPLOAD_ROOT) --use-server-modtime --checkers 16 --output index.html=html --output index.json=caddy --header-upload "Cache-Control: public, max-age=60" --exclude /favicon.ico
 # Pass in GOTAGS=xyz on the make command line to set build tags
 ifdef GOTAGS
 BUILDTAGS=-tags "$(GOTAGS)"
@@ -45,7 +48,7 @@ LINTTAGS=--build-tags "$(GOTAGS)"
 endif
 LDFLAGS=--ldflags "-s -X github.com/rclone/rclone/fs.Version=$(TAG)"
 
-.PHONY: rclone test_all vars version
+.PHONY: rclone test_all vars version fetch-gui fetch-gui-and-commit
 
 rclone:
 ifeq ($(GO_OS),windows)
@@ -58,6 +61,12 @@ endif
 	mkdir -p `go env GOPATH`/bin/
 	cp -av rclone`go env GOEXE` `go env GOPATH`/bin/rclone`go env GOEXE`.new
 	mv -v `go env GOPATH`/bin/rclone`go env GOEXE`.new `go env GOPATH`/bin/rclone`go env GOEXE`
+
+fetch-gui:
+	$(SHELL) ./bin/fetch-gui-dist.sh
+
+fetch-gui-and-commit:
+	$(SHELL) ./bin/fetch-gui-dist.sh --commit
 
 test_all:
 	go install $(LDFLAGS) $(BUILDTAGS) $(BUILD_ARGS) github.com/rclone/rclone/fstest/test_all
@@ -87,11 +96,15 @@ test:	rclone test_all
 	@echo "Written logs in test_all.log"
 
 # Quick test
+#
+# The timeout is raised above the go test default of 10m as the
+# cmd/gitannex end to end tests can take longer than that on slow CI
+# runners.
 quicktest:
-	RCLONE_CONFIG="/notfound" go test $(LDFLAGS) $(BUILDTAGS) ./...
+	RCLONE_CONFIG="/notfound" go test $(LDFLAGS) $(BUILDTAGS) -timeout 20m ./...
 
 racequicktest:
-	RCLONE_CONFIG="/notfound" go test $(LDFLAGS) $(BUILDTAGS) -cpu=2 -race ./...
+	RCLONE_CONFIG="/notfound" go test $(LDFLAGS) $(BUILDTAGS) -cpu=2 -race -timeout 20m ./...
 
 compiletest:
 	RCLONE_CONFIG="/notfound" go test $(LDFLAGS) $(BUILDTAGS) -run XXX ./...
@@ -120,6 +133,25 @@ updatedirect:
 	GO111MODULE=on go get -d $$(go list -m -f '{{if not (or .Main .Indirect)}}{{.Path}}{{end}}' all)
 	GO111MODULE=on go mod tidy
 
+# Update direct dependencies only but won't update the `go` line in go.mod
+updatedirectnoupgrade:
+	@GO_VERSION=$$(awk '/^go /{print $$2}' go.mod) && \
+	for mod in $$(go list -m -f '{{if not (or .Main .Indirect)}}{{.Path}}{{end}}' all); do \
+		cp go.mod go.mod.bak && \
+		cp go.sum go.sum.bak && \
+		go get $$mod && \
+		NEW_VERSION=$$(awk '/^go /{print $$2}' go.mod) && \
+		if [ "$$NEW_VERSION" != "$$GO_VERSION" ]; then \
+			echo "SKIPPING $$mod (requires go $$NEW_VERSION)"; \
+			cp go.mod.bak go.mod; \
+			cp go.sum.bak go.sum; \
+		else \
+			echo "updated $$mod"; \
+		fi; \
+	done && \
+	rm -f go.mod.bak go.sum.bak && \
+	go mod tidy
+
 # Update direct and indirect dependencies and test dependencies
 update:
 	GO111MODULE=on go get -d -u -t ./...
@@ -144,6 +176,8 @@ MANUAL.txt:	MANUAL.md
 	pandoc -s --from markdown-smart --to plain MANUAL.md -o MANUAL.txt
 
 commanddocs: rclone
+	go generate ./lib/transform
+	go generate ./cmd/bisync
 	-@rmdir -p '$$HOME/.config/rclone'
 	XDG_CACHE_HOME="" XDG_CONFIG_HOME="" HOME="\$$HOME" USER="\$$USER" rclone gendocs --config=/notfound docs/content/
 	@[ ! -e '$$HOME' ] || (echo 'Error: created unwanted directory named $$HOME' && exit 1)
@@ -201,6 +235,7 @@ check_sign:
 upload:
 	rclone -P copy build/ downloads.rclone.org:/$(TAG)
 	rclone lsf build --files-only --include '*.{zip,deb,rpm}' --include version.txt | xargs -i bash -c 'i={}; j="$$i"; [[ $$i =~ (.*)(-v[0-9\.]+-)(.*) ]] && j=$${BASH_REMATCH[1]}-current-$${BASH_REMATCH[3]}; rclone copyto -v "downloads.rclone.org:/$(TAG)/$$i" "downloads.rclone.org:/$$j"'
+	rclone -P index downloads.rclone.org: --changed /$(TAG)/ --checkers 16 --output index.html=html --output index.json=caddy --header-upload "Cache-Control: public, max-age=60" --exclude /favicon.ico
 
 upload_github:
 	./bin/upload-github $(TAG)
@@ -212,6 +247,12 @@ beta:
 	go run bin/cross-compile.go $(BUILD_FLAGS) $(BUILDTAGS) $(BUILD_ARGS) $(TAG)
 	rclone -v copy build/ memstore:pub-rclone-org/$(TAG)
 	@echo Beta release ready at https://pub.rclone.org/$(TAG)/
+
+privatebeta:
+	go run bin/cross-compile.go $(BUILD_FLAGS) $(BUILDTAGS) $(BUILD_ARGS) -include '^(darwin|windows|linux)/(arm64|amd64)$$' $(TAG)
+	rclone -Pv copy build/ private-downloads:/beta/$(TAG)
+	@echo Private beta release ready at private-downloads:/beta/$(TAG)/
+	rclone link private-downloads:/beta/$(TAG)
 
 log_since_last_release:
 	git log $(LAST_TAG)..
@@ -227,6 +268,7 @@ ci_upload:
 ifeq ($(or $(BRANCH_PATH),$(RELEASE_TAG)),)
 	./rclone --config bin/travis.rclone.conf -v copy build/ $(BETA_UPLOAD_ROOT)/test/testbuilds-latest
 endif
+	./rclone $(BETA_INDEX) --changed $(BETA_PATH)/testbuilds/ $(if $(or $(BRANCH_PATH),$(RELEASE_TAG)),,--changed test/testbuilds-latest/)
 	@echo Beta release ready at $(BETA_URL)/testbuilds
 
 ci_beta:
@@ -236,6 +278,7 @@ ci_beta:
 ifeq ($(or $(BRANCH_PATH),$(RELEASE_TAG)),)
 	rclone --config bin/travis.rclone.conf -v copy --include '*beta-latest*' --include version.txt build/ $(BETA_UPLOAD_ROOT)$(BETA_SUBDIR)
 endif
+	rclone $(BETA_INDEX) --changed $(BETA_PATH)/ $(if $(or $(BRANCH_PATH),$(RELEASE_TAG)),,$(if $(BETA_SUBDIR),--changed $(BETA_SUBDIR)/))
 	@echo Beta release ready at $(BETA_URL)
 
 # Fetch the binary builds from GitHub actions
@@ -257,21 +300,26 @@ retag:
 	@echo "Version is $(VERSION)"
 	git tag -f -s -m "Version $(VERSION)" $(VERSION)
 
+# Start development of the next version after a release: the next
+# minor version on master or the next patch version on a stable branch.
 startdev:
-	@echo "Version is $(VERSION)"
-	@echo "Next version is $(NEXT_VERSION)"
-	echo -e "package fs\n\n// VersionTag of rclone\nvar VersionTag = \"$(NEXT_VERSION)\"\n" | gofmt > fs/versiontag.go
-	echo -n "$(NEXT_VERSION)" > docs/layouts/partials/version.html
-	echo "$(NEXT_VERSION)" > VERSION
-	git commit -m "Start $(NEXT_VERSION)-DEV development" fs/versiontag.go VERSION docs/layouts/partials/version.html
+	@branch=$$(git rev-parse --abbrev-ref HEAD); \
+	case "$$branch" in \
+	master) next="$(NEXT_VERSION)" ;; \
+	v*-stable) next="$(NEXT_PATCH_VERSION)" ;; \
+	*) echo "Branch $$branch isn't master or a stable branch" >&2; exit 1 ;; \
+	esac; \
+	if ! git rev-parse -q --verify "refs/tags/$(VERSION)" >/dev/null; then \
+		echo "$(VERSION) hasn't been tagged yet - has development already been started?" >&2; exit 1; \
+	fi; \
+	echo "Version is $(VERSION)"; \
+	echo "Next version is $$next"; \
+	echo -e "package fs\n\n// VersionTag of rclone\nvar VersionTag = \"$$next\"\n" | gofmt > fs/versiontag.go; \
+	echo -n "$$next" > docs/layouts/partials/version.html; \
+	echo "$$next" > VERSION; \
+	git commit -m "Start $$next-DEV development" fs/versiontag.go VERSION docs/layouts/partials/version.html
 
-startstable:
-	@echo "Version is $(VERSION)"
-	@echo "Next stable version is $(NEXT_PATCH_VERSION)"
-	echo -e "package fs\n\n// VersionTag of rclone\nvar VersionTag = \"$(NEXT_PATCH_VERSION)\"\n" | gofmt > fs/versiontag.go
-	echo -n "$(NEXT_PATCH_VERSION)" > docs/layouts/partials/version.html
-	echo "$(NEXT_PATCH_VERSION)" > VERSION
-	git commit -m "Start $(NEXT_PATCH_VERSION)-DEV development" fs/versiontag.go VERSION docs/layouts/partials/version.html
+startstable: startdev
 
 winzip:
 	zip -9 rclone-$(TAG).zip rclone.exe

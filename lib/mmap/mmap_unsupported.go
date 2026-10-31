@@ -1,4 +1,4 @@
-﻿// Fallback Alloc and Free for unsupported OSes
+// Fallback Alloc and Free for unsupported OSes
 
 //go:build plan9 || js
 

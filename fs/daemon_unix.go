@@ -1,4 +1,4 @@
-﻿// Daemonization interface for Unix platforms (common definitions)
+// Daemonization interface for Unix platforms (common definitions)
 
 //go:build !windows && !plan9 && !js
 

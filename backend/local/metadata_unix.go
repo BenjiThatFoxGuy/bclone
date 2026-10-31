@@ -1,4 +1,4 @@
-﻿//go:build openbsd || solaris
+//go:build openbsd || solaris
 
 package local
 

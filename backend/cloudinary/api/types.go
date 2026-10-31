@@ -1,4 +1,4 @@
-﻿// Package api has type definitions for cloudinary
+// Package api has type definitions for cloudinary
 package api
 
 import (

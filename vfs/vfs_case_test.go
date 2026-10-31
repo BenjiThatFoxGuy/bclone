@@ -1,4 +1,4 @@
-﻿package vfs
+package vfs
 
 import (
 	"context"
@@ -36,12 +36,12 @@ func TestCaseSensitivity(t *testing.T) {
 	// Create a case-Sensitive and case-INsensitive VFS
 	optCS := vfscommon.Opt
 	optCS.CaseInsensitive = false
-	vfsCS := New(r.Fremote, &optCS)
+	vfsCS := New(context.Background(), r.Fremote, &optCS)
 	defer cleanupVFS(t, vfsCS)
 
 	optCI := vfscommon.Opt
 	optCI.CaseInsensitive = true
-	vfsCI := New(r.Fremote, &optCI)
+	vfsCI := New(context.Background(), r.Fremote, &optCI)
 	defer cleanupVFS(t, vfsCI)
 
 	// Run basic checks that must pass on VFS of any type.
@@ -180,7 +180,7 @@ func TestUnicodeNormalization(t *testing.T) {
 
 	// Create VFS
 	opt := vfscommon.Opt
-	vfs := New(r.Fremote, &opt)
+	vfs := New(context.Background(), r.Fremote, &opt)
 	defer cleanupVFS(t, vfs)
 
 	// assert that both files are found under NFD-normalized names
@@ -194,4 +194,43 @@ func TestUnicodeNormalization(t *testing.T) {
 	ci.NoUnicodeNormalization = true
 	assertFileDataVFS(t, vfs, norm.NFD.String(both), "data1")
 	assertFileAbsentVFS(t, vfs, nfd)
+}
+
+func TestRenameByNormalizedName(t *testing.T) {
+	r := fstest.NewRun(t)
+	features := r.Fremote.Features()
+	if features.DirMove == nil && features.Move == nil && features.Copy == nil {
+		t.Skip("can't rename directories")
+	}
+
+	var (
+		nfc = norm.NFC.String(norm.NFD.String("ěáñ"))
+		nfd = norm.NFD.String(nfc)
+	)
+
+	ctx := context.Background()
+	r.WriteObject(ctx, "FiLeA", "data1", t1)
+	r.WriteObject(ctx, nfc+".txt", "data2", t2)
+
+	opt := vfscommon.Opt
+	opt.CaseInsensitive = true
+	vfs := New(ctx, r.Fremote, &opt)
+	defer cleanupVFS(t, vfs)
+
+	root, err := vfs.Root()
+	require.NoError(t, err)
+	_, err = root.Mkdir("DiRa")
+	require.NoError(t, err)
+	_, err = root.Mkdir(nfc)
+	require.NoError(t, err)
+
+	for _, names := range [][2]string{
+		{"FILEA", "file1"},
+		{nfd + ".txt", "file2"},
+		{"DIRA", "dir1"},
+		{nfd, "dir2"},
+	} {
+		require.NoError(t, root.Rename(names[0], names[1], root))
+	}
+	checkListing(t, root, []string{"dir1,0,true", "dir2,0,true", "file1,5,false", "file2,5,false"})
 }

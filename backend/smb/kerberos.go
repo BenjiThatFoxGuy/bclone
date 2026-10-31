@@ -1,4 +1,4 @@
-﻿package smb
+package smb
 
 import (
 	"fmt"
@@ -32,6 +32,9 @@ type KerberosFactory struct {
 	newClient  func(*credentials.CCache, *config.Config, ...func(*client.Settings)) (*client.Client, error)
 	loadConfig func() (*config.Config, error)
 }
+
+// kerberosFactory is the shared KerberosFactory used to cache all connections
+var kerberosFactory = NewKerberosFactory()
 
 // NewKerberosFactory creates a new instance of KerberosFactory with default dependencies.
 func NewKerberosFactory() *KerberosFactory {

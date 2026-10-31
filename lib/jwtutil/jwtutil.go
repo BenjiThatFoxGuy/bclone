@@ -1,4 +1,4 @@
-﻿// Package jwtutil provides JWT utilities.
+// Package jwtutil provides JWT utilities.
 package jwtutil
 
 import (
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/lib/oauthutil"

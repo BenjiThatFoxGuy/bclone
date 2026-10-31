@@ -1,4 +1,4 @@
-﻿package protondrive_test
+package protondrive_test
 
 import (
 	"testing"

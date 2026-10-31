@@ -1,4 +1,4 @@
-﻿package bisync
+package bisync
 
 import (
 	"context"
@@ -163,6 +163,16 @@ func (b *bisyncRun) resolve(ctxMove context.Context, path1, path2, file, alias s
 			oldName: alias,
 			newName: SuffixName(ctxMove, alias, suff2),
 		},
+	}
+
+	if b.opt.ConflictLoser == ConflictLoserPathname {
+		switch winningPath {
+		case 1: // keep path1, rename path2
+			r.path1.newName = r.path1.oldName
+		case 2: // keep path2, rename path1
+			r.path2.newName = r.path2.oldName
+		}
+		// case 0 keeps default
 	}
 
 	// handle auto-numbering

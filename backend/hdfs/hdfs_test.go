@@ -1,4 +1,4 @@
-﻿// Test HDFS filesystem interface
+// Test HDFS filesystem interface
 
 //go:build !plan9
 

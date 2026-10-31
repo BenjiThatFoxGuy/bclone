@@ -1,4 +1,4 @@
-﻿package fs
+package fs
 
 // DumpFlags describes the Dump options in force
 type DumpFlags = Bits[dumpChoices]
@@ -14,6 +14,9 @@ const (
 	DumpGoRoutines
 	DumpOpenFiles
 	DumpMapper
+	DumpCurl
+	DumpErrors
+	DumpTrace
 )
 
 type dumpChoices struct{}
@@ -29,6 +32,9 @@ func (dumpChoices) Choices() []BitsChoicesInfo {
 		{uint64(DumpGoRoutines), "goroutines"},
 		{uint64(DumpOpenFiles), "openfiles"},
 		{uint64(DumpMapper), "mapper"},
+		{uint64(DumpCurl), "curl"},
+		{uint64(DumpErrors), "errors"},
+		{uint64(DumpTrace), "trace"},
 	}
 }
 

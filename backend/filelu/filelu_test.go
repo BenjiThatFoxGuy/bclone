@@ -1,4 +1,4 @@
-﻿package filelu_test
+package filelu_test
 
 import (
 	"testing"
@@ -12,5 +12,8 @@ func TestIntegration(t *testing.T) {
 		RemoteName:      "TestFileLu:",
 		NilObject:       nil,
 		SkipInvalidUTF8: true,
+		ChunkedUpload: fstests.ChunkedUploadConfig{
+			MinChunkSize: 1,
+		},
 	})
 }

@@ -1,4 +1,4 @@
-﻿// Package pool implements a memory pool similar in concept to
+// Package pool implements a memory pool similar in concept to
 // sync.Pool but with more determinism.
 package pool
 
@@ -46,7 +46,7 @@ type Pool struct {
 }
 
 // totalMemory is a semaphore used to control total buffer usage of
-// all Pools. It it may be nil in which case the total buffer usage
+// all Pools. It may be nil in which case the total buffer usage
 // will not be controlled. It counts memory in active use, it does not
 // count memory cached in the pool.
 var totalMemory *semaphore.Weighted

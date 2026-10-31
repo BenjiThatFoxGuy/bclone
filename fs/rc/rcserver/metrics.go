@@ -1,4 +1,4 @@
-﻿// Package rcserver implements the HTTP endpoint to serve the remote control
+// Package rcserver implements the HTTP endpoint to serve the remote control
 package rcserver
 
 import (

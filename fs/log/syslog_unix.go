@@ -1,4 +1,4 @@
-﻿// Syslog interface for Unix variants only
+// Syslog interface for Unix variants only
 
 //go:build !windows && !nacl && !plan9
 

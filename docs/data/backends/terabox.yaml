@@ -1,0 +1,17 @@
+backend: terabox
+name: Terabox
+tier: Tier 4
+maintainers: External
+features_score: 0
+integration_tests: Untested
+data_integrity: Other
+performance: Medium
+adoption: Some use
+docs: Partial
+security: Medium
+virtual: false
+remote: 'TestTerabox:'
+features: null
+hashes: 
+- md5
+precision: null

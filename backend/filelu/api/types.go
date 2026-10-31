@@ -1,7 +1,20 @@
-﻿// Package api defines types for interacting with the FileLu API.
+// Package api defines types for interacting with the FileLu API.
 package api
 
 import "encoding/json"
+
+// MultipartInitResponse represents the response from multipart/init.
+type MultipartInitResponse struct {
+	Status int    `json:"status"`
+	Msg    string `json:"msg"`
+	Result struct {
+		UploadID   string `json:"upload_id"`
+		SessID     string `json:"sess_id"`
+		Server     string `json:"server"`
+		FolderID   int64  `json:"folder_id"`
+		ObjectPath string `json:"object_path"`
+	} `json:"result"`
+}
 
 // CreateFolderResponse represents the response for creating a folder.
 type CreateFolderResponse struct {

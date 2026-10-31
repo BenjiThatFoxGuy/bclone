@@ -1,4 +1,4 @@
-﻿//go:build cmount && ((linux && cgo) || (darwin && cgo) || (freebsd && cgo) || windows)
+//go:build cmount && ((linux && cgo) || (darwin && cgo) || (freebsd && cgo) || (openbsd && cgo) || windows)
 
 package cmount
 
@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -210,6 +211,12 @@ func (fsys *FS) Readdir(dirPath string,
 	// We can't seek in directories and FUSE should know that so
 	// return an error if ofst is ever set.
 	if ofst > 0 {
+		// However openbsd doesn't seem to know this - perhaps a bug in its
+		// FUSE implementation or a bug in cgofuse?
+		// See: https://github.com/billziss-gh/cgofuse/issues/49
+		if runtime.GOOS == "openbsd" {
+			return 0
+		}
 		return -fuse.ESPIPE
 	}
 
@@ -529,27 +536,56 @@ func (fsys *FS) Fsyncdir(path string, datasync bool, fh uint64) (errc int) {
 	return 0
 }
 
+// #9908: simulate macFUSE behaviour (discard setxattr calls) - otherwise Finder cannot copy files onto the mount
+func shouldIgnoreAppleXattr(opt *mountlib.Options) bool {
+	if !opt.NoAppleXattr {
+		return false
+	}
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	// only flip the behaviour on FSKit
+	for _, o := range opt.ExtraOptions {
+		if strings.TrimSpace(o) == "backend=fskit" {
+			return true
+		}
+	}
+	return false
+}
+
 // Setxattr sets extended attributes.
 func (fsys *FS) Setxattr(path string, name string, value []byte, flags int) (errc int) {
 	defer log.Trace(path, "name=%q, value=%q, flags=%d", name, value, flags)("errc=%d", &errc)
+	if shouldIgnoreAppleXattr(fsys.opt) && strings.HasPrefix(name, "com.apple.") {
+		return 0
+	}
 	return -fuse.ENOSYS
 }
 
 // Getxattr gets extended attributes.
 func (fsys *FS) Getxattr(path string, name string) (errc int, value []byte) {
 	defer log.Trace(path, "name=%q", name)("errc=%d, value=%q", &errc, &value)
+	if shouldIgnoreAppleXattr(fsys.opt) && strings.HasPrefix(name, "com.apple.") {
+		return -fuse.ENOATTR, nil
+	}
 	return -fuse.ENOSYS, nil
 }
 
 // Removexattr removes extended attributes.
 func (fsys *FS) Removexattr(path string, name string) (errc int) {
 	defer log.Trace(path, "name=%q", name)("errc=%d", &errc)
+	if shouldIgnoreAppleXattr(fsys.opt) && strings.HasPrefix(name, "com.apple.") {
+		return 0
+	}
 	return -fuse.ENOSYS
 }
 
 // Listxattr lists extended attributes.
 func (fsys *FS) Listxattr(path string, fill func(name string) bool) (errc int) {
 	defer log.Trace(path, "fill=%p", fill)("errc=%d", &errc)
+	if shouldIgnoreAppleXattr(fsys.opt) {
+		return 0
+	}
 	return -fuse.ENOSYS
 }
 

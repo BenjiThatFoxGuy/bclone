@@ -1,4 +1,4 @@
-﻿package encoder
+package encoder
 
 // Standard defines the encoding that is used for paths in- and output by rclone.
 //

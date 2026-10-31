@@ -1,4 +1,4 @@
-﻿// Package lsl provides the lsl command.
+// Package lsl provides the lsl command.
 package lsl
 
 import (
@@ -23,7 +23,7 @@ readable format with modification time, size and path. Recurses by default.
 
 E.g.
 
-` + "```sh" + `
+` + "```console" + `
 $ rclone lsl swift:bucket
     60295 2016-06-25 18:55:41.062626927 bevajer5jef
     90613 2016-06-25 18:55:43.302607074 canole

@@ -1,4 +1,4 @@
-﻿// Define the internal rc functions
+// Define the internal rc functions
 
 package rc
 
@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/coreos/go-semver/semver"
 
 	"github.com/rclone/rclone/fs"
@@ -23,19 +25,19 @@ import (
 
 func init() {
 	Add(Call{
-		Path:         "rc/noopauth",
-		AuthRequired: true,
-		Fn:           rcNoop,
-		Title:        "Echo the input to the output parameters requiring auth",
+		Path:  "rc/noopauth",
+		Fn:    rcNoop,
+		Title: "Echo the input to the output parameters requiring auth",
 		Help: `
 This echoes the input parameters to the output parameters for testing
 purposes.  It can be used to check that rclone is still alive and to
 check that parameter passing is working properly.`,
 	})
 	Add(Call{
-		Path:  "rc/noop",
-		Fn:    rcNoop,
-		Title: "Echo the input to the output parameters",
+		Path:   "rc/noop",
+		NoAuth: true,
+		Fn:     rcNoop,
+		Title:  "Echo the input to the output parameters",
 		Help: `
 This echoes the input parameters to the output parameters for testing
 purposes.  It can be used to check that rclone is still alive and to
@@ -50,9 +52,10 @@ func rcNoop(ctx context.Context, in Params) (out Params, err error) {
 
 func init() {
 	Add(Call{
-		Path:  "rc/error",
-		Fn:    rcError,
-		Title: "This returns an error",
+		Path:   "rc/error",
+		NoAuth: true,
+		Fn:     rcError,
+		Title:  "This returns an error",
 		Help: `
 This returns an error with the input as part of its error string.
 Useful for testing error handling.`,
@@ -66,9 +69,43 @@ func rcError(ctx context.Context, in Params) (out Params, err error) {
 
 func init() {
 	Add(Call{
-		Path:  "rc/list",
-		Fn:    rcList,
-		Title: "List all the registered remote control commands",
+		Path:  "rc/panic",
+		Fn:    rcPanic,
+		Title: "This returns an error by panicking",
+		Help: `
+This returns an error with the input as part of its error string.
+Useful for testing error handling.`,
+	})
+}
+
+// Return an error regardless
+func rcPanic(ctx context.Context, in Params) (out Params, err error) {
+	panic(fmt.Sprintf("arbitrary error on input %+v", in))
+}
+
+func init() {
+	Add(Call{
+		Path:  "rc/fatal",
+		Fn:    rcFatal,
+		Title: "This returns an fatal error",
+		Help: `
+This returns an error with the input as part of its error string.
+Useful for testing error handling.`,
+	})
+}
+
+// Return an error regardless
+func rcFatal(ctx context.Context, in Params) (out Params, err error) {
+	fs.Fatalf(nil, "arbitrary error on input %+v", in)
+	return nil, nil
+}
+
+func init() {
+	Add(Call{
+		Path:   "rc/list",
+		NoAuth: true,
+		Fn:     rcList,
+		Title:  "List all the registered remote control commands",
 		Help: `
 This lists all the registered remote control commands as a JSON map in
 the commands response.`,
@@ -168,19 +205,23 @@ func rcGc(ctx context.Context, in Params) (out Params, err error) {
 
 func init() {
 	Add(Call{
-		Path:  "core/version",
-		Fn:    rcVersion,
-		Title: "Shows the current version of rclone and the go runtime.",
+		Path:   "core/version",
+		NoAuth: true,
+		Fn:     rcVersion,
+		Title:  "Shows the current version of rclone, Go and the OS.",
 		Help: `
-This shows the current version of go and the go runtime:
+This shows the current versions of rclone, Go and the OS:
 
-- version - rclone version, e.g. "v1.53.0"
+- version - rclone version, e.g. "v1.71.2"
 - decomposed - version number as [major, minor, patch]
 - isGit - boolean - true if this was compiled from the git version
 - isBeta - boolean - true if this is a beta version
-- os - OS in use as according to Go
-- arch - cpu architecture in use according to Go
-- goVersion - version of Go runtime in use
+- os - OS in use as according to Go GOOS (e.g. "linux")
+- osKernel - OS Kernel version (e.g. "6.8.0-86-generic (x86_64)")
+- osVersion -  OS Version (e.g. "ubuntu 24.04 (64 bit)")
+- osArch - cpu architecture in use (e.g. "arm64 (ARMv8 compatible)")
+- arch - cpu architecture in use according to Go GOARCH (e.g. "arm64")
+- goVersion - version of Go runtime in use (e.g. "go1.25.0")
 - linking - type of rclone executable (static or dynamic)
 - goTags - space separated build tags or "none"
 
@@ -195,12 +236,22 @@ func rcVersion(ctx context.Context, in Params) (out Params, err error) {
 		return nil, err
 	}
 	linking, tagString := buildinfo.GetLinkingAndTags()
+	osVersion, osKernel := buildinfo.GetOSVersion()
+	if osVersion == "" {
+		osVersion = "unknown"
+	}
+	if osKernel == "" {
+		osKernel = "unknown"
+	}
 	out = Params{
 		"version":    fs.Version,
 		"decomposed": version.Slice(),
 		"isGit":      strings.HasSuffix(fs.Version, "-DEV"),
 		"isBeta":     version.PreRelease != "",
 		"os":         runtime.GOOS,
+		"osVersion":  osVersion,
+		"osKernel":   osKernel,
+		"osArch":     buildinfo.GetArch(),
 		"arch":       runtime.GOARCH,
 		"goVersion":  runtime.Version(),
 		"linking":    linking,
@@ -254,15 +305,14 @@ func init() {
 
 // Terminates app
 func rcQuit(ctx context.Context, in Params) (out Params, err error) {
-	code, err := in.GetInt64("exitCode")
+	exitCode, err := in.GetInt("exitCode")
 
 	if IsErrParamInvalid(err) {
 		return nil, err
 	}
 	if IsErrParamNotFound(err) {
-		code = 0
+		exitCode = 0
 	}
-	exitCode := int(code)
 
 	go func(exitCode int) {
 		time.Sleep(time.Millisecond * 1500)
@@ -302,11 +352,11 @@ Results:
 }
 
 func rcSetMutexProfileFraction(ctx context.Context, in Params) (out Params, err error) {
-	rate, err := in.GetInt64("rate")
+	rate, err := in.GetInt("rate")
 	if err != nil {
 		return nil, err
 	}
-	previousRate := runtime.SetMutexProfileFraction(int(rate))
+	previousRate := runtime.SetMutexProfileFraction(rate)
 	out = make(Params)
 	out["previousRate"] = previousRate
 	return out, nil
@@ -337,11 +387,11 @@ Parameters:
 }
 
 func rcSetBlockProfileRate(ctx context.Context, in Params) (out Params, err error) {
-	rate, err := in.GetInt64("rate")
+	rate, err := in.GetInt("rate")
 	if err != nil {
 		return nil, err
 	}
-	runtime.SetBlockProfileRate(int(rate))
+	runtime.SetBlockProfileRate(rate)
 	return nil, nil
 }
 
@@ -420,11 +470,11 @@ Parameters:
 }
 
 func rcSetGCPercent(ctx context.Context, in Params) (out Params, err error) {
-	gcPercent, err := in.GetInt64("gc-percent")
+	gcPercent, err := in.GetInt("gc-percent")
 	if err != nil {
 		return nil, err
 	}
-	oldGCPercent := debug.SetGCPercent(int(gcPercent))
+	oldGCPercent := debug.SetGCPercent(gcPercent)
 	out = Params{
 		"existing-gc-percent": oldGCPercent,
 	}
@@ -434,7 +484,6 @@ func rcSetGCPercent(ctx context.Context, in Params) (out Params, err error) {
 func init() {
 	Add(Call{
 		Path:          "core/command",
-		AuthRequired:  true,
 		Fn:            rcRunCommand,
 		NeedsRequest:  true,
 		NeedsResponse: true,
@@ -565,4 +614,93 @@ func rcRunCommand(ctx context.Context, in Params) (out Params, err error) {
 
 	err = cmd.Run()
 	return nil, err
+}
+
+func init() {
+	Add(Call{
+		Path:  "core/disks",
+		Fn:    rcDisks,
+		Title: "List the local disks",
+		Help: `This does not take any parameters
+
+This call is for rclone GUI programs to enumerate local disks and
+important directories for doing transfers to and from. The list
+returned will include the root directory and the user's home directory
+and any mounted disks. The returned items should be usable directly as
+remotes.
+
+Returns:
+
+- disks
+    - This is an array of strings of local disk names
+`,
+	})
+}
+
+func mountOK(path string) bool {
+	if runtime.GOOS == "darwin" {
+		if strings.HasPrefix(path, "/Volumes/") {
+			return true
+		}
+	} else if runtime.GOOS == "windows" {
+		return true
+	} else { // Linux and all other unices
+		// Fedora/Arch/openSUSE standard
+		if strings.HasPrefix(path, "/run/media/") {
+			return true
+		}
+		// Ubuntu/Debian standard
+		if strings.HasPrefix(path, "/media/") {
+			return true
+		}
+		// Traditional unix standard
+		if strings.HasPrefix(path, "/mnt/") {
+			return true
+		}
+	}
+	return false
+}
+
+// Disks returns likely local disks and some other useful positions
+func rcDisks(ctx context.Context, in Params) (out Params, err error) {
+	disks := []string{}
+	add := func(s string) {
+		if s != "/" {
+			s, _ = strings.CutSuffix(s, "/")
+		}
+		if !slices.Contains(disks, s) {
+			disks = append(disks, s)
+		}
+	}
+
+	// Add home directory
+	home, err := os.UserHomeDir()
+	if err == nil {
+		add(home)
+	}
+
+	// Add root directory
+	if runtime.GOOS != "windows" {
+		add("/")
+	}
+
+	// Add mount points
+	for _, mount := range getMounts() {
+		if mountOK(mount) {
+			add(mount)
+		}
+	}
+
+	// Add user directories
+	add(xdg.UserDirs.Desktop)
+	add(xdg.UserDirs.Download)
+	add(xdg.UserDirs.Documents)
+	add(xdg.UserDirs.Music)
+	add(xdg.UserDirs.Pictures)
+	add(xdg.UserDirs.Videos)
+
+	out = Params{
+		"disks": disks,
+	}
+	return out, nil
 }

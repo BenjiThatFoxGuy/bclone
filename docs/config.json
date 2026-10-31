@@ -13,7 +13,8 @@
   ],
   "ignoreFiles": [
     "~$",
-    "^\\."
+    "^\\.",
+    "\\.go$"
   ],
   "enableGitInfo": true,
   "markup": {
@@ -32,6 +33,9 @@
       "renderer": {
         "unsafe": false
       }
+    },
+    "highlight": {
+      "noClasses": false
     }
   }
 }

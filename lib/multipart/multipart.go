@@ -1,4 +1,4 @@
-﻿// Package multipart implements generic multipart uploading.
+// Package multipart implements generic multipart uploading.
 package multipart
 
 import (
@@ -119,6 +119,13 @@ func UploadMultipart(ctx context.Context, src fs.ObjectInfo, in io.Reader, opt U
 	err = g.Wait()
 	if err != nil {
 		return nil, err
+	}
+
+	// Check the source supplied the number of bytes it declared before
+	// finalising, otherwise a truncated object would be created on the
+	// backend. Returning an error here aborts the upload.
+	if size >= 0 && off != size {
+		return nil, fmt.Errorf("multipart upload: expected %d bytes in input, but got %d: %w", size, off, io.ErrUnexpectedEOF)
 	}
 
 	err = chunkWriter.Close(ctx)

@@ -1,4 +1,4 @@
-﻿package fs
+package fs
 
 type cutoffModeChoices struct{}
 

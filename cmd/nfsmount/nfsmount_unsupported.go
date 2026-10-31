@@ -1,4 +1,4 @@
-﻿// Build for nfsmount for unsupported platforms to stop go complaining
+// Build for nfsmount for unsupported platforms to stop go complaining
 // about "no buildable Go source files "
 
 //go:build !unix

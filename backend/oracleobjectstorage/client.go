@@ -1,4 +1,4 @@
-﻿//go:build !plan9 && !solaris && !js
+//go:build !plan9 && !solaris && !js
 
 package oracleobjectstorage
 
@@ -89,6 +89,12 @@ func modifyClient(ctx context.Context, opt *Options, client *common.BaseClient) 
 	client.HTTPClient = getHTTPClient(ctx)
 	if opt.Provider == noAuth {
 		client.Signer = getNoAuthSigner()
+	}
+	// Set Accept-Encoding: gzip on every request to stop the Go HTTP
+	// transport transparently decompressing objects.
+	client.Interceptor = func(request *http.Request) error {
+		request.Header.Set("Accept-Encoding", "gzip")
+		return nil
 	}
 }
 
