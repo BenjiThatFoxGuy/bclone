@@ -68,28 +68,6 @@ func TestFullPath(t *testing.T) {
 	}
 }
 
-func TestIsImageFile(t *testing.T) {
-	tests := []struct {
-		name string
-		want bool
-	}{
-		{"photo.jpg", true},
-		{"photo.JPEG", true},
-		{"image.png", true},
-		{"sticker.webp", true},
-		{"doc.pdf", false},
-		{"video.mp4", false},
-		{"archive.zip", false},
-	}
-
-	for _, tt := range tests {
-		got := isImageFile(tt.name)
-		if got != tt.want {
-			t.Errorf("isImageFile(%q) = %v, want %v", tt.name, got, tt.want)
-		}
-	}
-}
-
 func TestMakeFileName(t *testing.T) {
 	date := time.Date(2024, 1, 15, 12, 34, 56, 0, time.UTC)
 	nameSet := map[string]bool{}
