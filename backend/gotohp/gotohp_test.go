@@ -5,9 +5,12 @@ import (
 	"context"
 	"io"
 	"os"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/rclone/rclone/backend/gotohp/api"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/vfs/vfscommon"
@@ -82,8 +85,8 @@ func TestResolvePathLoose(t *testing.T) {
 func TestResolvePathNewAlbum(t *testing.T) {
 	f := newTestFs(t, "")
 	rp := f.resolvePath("NewAlbum/Vacation/photo.jpg")
-	if rp.mode != albumNew {
-		t.Errorf("mode = %v, want albumNew", rp.mode)
+	if rp.mode != albumByName {
+		t.Errorf("mode = %v, want albumByName", rp.mode)
 	}
 	if rp.albumRef != "Vacation" {
 		t.Errorf("albumRef = %q, want Vacation", rp.albumRef)
@@ -113,8 +116,8 @@ func TestResolvePathRootPrefix(t *testing.T) {
 	// path.
 	f := newTestFs(t, "NewAlbum/Vacation")
 	rp := f.resolvePath("photo.jpg")
-	if rp.mode != albumNew {
-		t.Errorf("mode = %v, want albumNew", rp.mode)
+	if rp.mode != albumByName {
+		t.Errorf("mode = %v, want albumByName", rp.mode)
 	}
 	if rp.albumRef != "Vacation" {
 		t.Errorf("albumRef = %q, want Vacation", rp.albumRef)
@@ -128,8 +131,8 @@ func TestResolvePathConfigAlbumOverridesRouting(t *testing.T) {
 	f := newTestFs(t, "")
 	f.opt.Album = "PinnedAlbum"
 	rp := f.resolvePath("NewAlbum/Ignored/photo.jpg")
-	if rp.mode != albumNew {
-		t.Errorf("mode = %v, want albumNew", rp.mode)
+	if rp.mode != albumByName {
+		t.Errorf("mode = %v, want albumByName", rp.mode)
 	}
 	if rp.albumRef != "PinnedAlbum" {
 		t.Errorf("albumRef = %q, want PinnedAlbum (config album should win over path routing)", rp.albumRef)
@@ -317,5 +320,83 @@ func TestMkdirRmdirAreNoOps(t *testing.T) {
 	}
 	if err := f.Rmdir(context.Background(), "anything"); err != nil {
 		t.Errorf("Rmdir: %v", err)
+	}
+}
+
+func TestPresentNames(t *testing.T) {
+	items := []*api.LibraryItem{
+		{MediaKey: "k1", FileName: "shot.png", Timestamp: 1700000000},
+		{MediaKey: "k2", FileName: "shot.png", Timestamp: 1700000060},
+		{MediaKey: "k3", FileName: "burst.jpg", Timestamp: 1700000100},
+		{MediaKey: "k4", FileName: "burst.jpg", Timestamp: 1700000100},
+		{MediaKey: "k5", FileName: "unique.jpg", Timestamp: 1},
+	}
+	names := presentNames(items)
+	got := map[string]string{}
+	for name, item := range names {
+		got[item.MediaKey] = name
+	}
+	want := map[string]string{
+		"k1": "shot-1700000000.png",
+		"k2": "shot-1700000060.png",
+		"k3": "burst-1700000100-k3.jpg",
+		"k4": "burst-1700000100-k4.jpg",
+		"k5": "unique.jpg",
+	}
+	if len(names) != len(items) {
+		t.Fatalf("got %d names for %d items: %v", len(names), len(items), got)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s listed as %q, want %q", k, got[k], w)
+		}
+	}
+}
+
+func TestDuplicateNamesListedAndFound(t *testing.T) {
+	f := newSyncTestFs(t, "")
+	ctx := context.Background()
+	f.libMu.Lock()
+	f.libCache = map[string]*api.LibraryItem{
+		"k1": {MediaKey: "k1", FileName: "a.png", Timestamp: 100, CollectionID: "alb"},
+		"k2": {MediaKey: "k2", FileName: "a.png", Timestamp: 200, CollectionID: "alb"},
+		"k3": {MediaKey: "k3", FileName: "a.png", Timestamp: 300},
+	}
+	f.libCacheTime = time.Now()
+	f.libCacheTTL = time.Hour
+	f.libMu.Unlock()
+	f.albumMu.Lock()
+	f.albums["Trip"] = "alb"
+	f.albumByKey["alb"] = "Trip"
+	f.albumMu.Unlock()
+
+	entries, err := f.List(ctx, "Album/Trip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []string
+	for _, e := range entries {
+		listed = append(listed, e.Remote())
+	}
+	sort.Strings(listed)
+	if want := []string{"Album/Trip/a-100.png", "Album/Trip/a-200.png"}; strings.Join(listed, ",") != strings.Join(want, ",") {
+		t.Fatalf("listed %v, want %v", listed, want)
+	}
+
+	o, err := f.NewObject(ctx, "Album/Trip/a-200.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.(*Object).mediaKey != "k2" {
+		t.Errorf("found %s, want k2", o.(*Object).mediaKey)
+	}
+
+	// Loose at the root there is only one a.png, so it keeps its name
+	o, err = f.NewObject(ctx, "a.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.(*Object).mediaKey != "k3" {
+		t.Errorf("found %s, want k3", o.(*Object).mediaKey)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -177,9 +178,9 @@ type Fs struct {
 	deferUploads bool          // auto-detected: --vfs-cache-mode is on, i.e. running under mount/serve
 	lingerFor    time.Duration // pre-upload settle delay and post-upload phantom lifetime when deferUploads
 
-	albumMu     sync.Mutex
-	albums      map[string]string // album name -> album media key
-	albumByKey  map[string]string // album media key -> album name (reverse)
+	albumMu    sync.Mutex
+	albums     map[string]string // album name -> album media key
+	albumByKey map[string]string // album media key -> album name (reverse)
 
 	phantomDir string
 	phantomMu  sync.Mutex
@@ -190,7 +191,7 @@ type Fs struct {
 
 	// Library cache for read support (experimental)
 	libMu        sync.Mutex
-	libCache     map[string]*api.LibraryItem // key: filename
+	libCache     map[string]*api.LibraryItem // key: media key
 	libSyncToken string
 	libCacheTime time.Time
 	libCacheTTL  time.Duration // how long to consider the cache fresh
@@ -357,10 +358,10 @@ func (f *Fs) sweepPhantom() {
 
 // libraryCacheFile holds the persisted library state.
 type libraryCacheFile struct {
-	SyncToken string                       `json:"sync_token"`
-	Items     map[string]*api.LibraryItem  `json:"items"`
-	Albums    map[string]string            `json:"albums,omitempty"` // name -> album media key
-	SavedAt   time.Time                    `json:"saved_at"`
+	SyncToken string                      `json:"sync_token"`
+	Items     map[string]*api.LibraryItem `json:"items"`
+	Albums    map[string]string           `json:"albums,omitempty"` // name -> album media key
+	SavedAt   time.Time                   `json:"saved_at"`
 }
 
 // loadLibraryCache reads the persisted cache from disk if available.
@@ -378,10 +379,13 @@ func (f *Fs) loadLibraryCache() {
 		fs.Debugf(f, "Library cache file corrupt, ignoring: %v", err)
 		return
 	}
-	if cached.Items != nil {
-		f.libCache = cached.Items
-	} else {
-		f.libCache = make(map[string]*api.LibraryItem)
+	f.libCache = make(map[string]*api.LibraryItem, len(cached.Items))
+	for _, item := range cached.Items {
+		// Caches written before the cache was keyed by media key used the
+		// file name, which kept only one of each set of same-named items
+		if item != nil && item.MediaKey != "" {
+			f.libCache[item.MediaKey] = item
+		}
 	}
 	if cached.Albums != nil {
 		f.albumMu.Lock()
@@ -461,8 +465,8 @@ func (f *Fs) refreshLibraryCache(ctx context.Context) error {
 		func(items []api.LibraryItem) error {
 			for i := range items {
 				item := items[i]
-				if item.FileName != "" {
-					newItems[item.FileName] = &item
+				if item.FileName != "" && item.MediaKey != "" {
+					newItems[item.MediaKey] = &item
 				}
 			}
 			fs.Debugf(f, "Library page: received %d items (%d total new)", len(items), len(newItems))
@@ -544,18 +548,10 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		seenNames["ExistingAlbum"] = true
 
 		// Also show loose library files at root
-		for _, item := range f.libCache {
-			if item.FileName == "" || item.CollectionID != "" {
-				continue // skip items in albums, show only loose
-			}
-			remote := item.FileName
+		for remote, item := range presentNames(f.scopeItems("")) {
 			if !seenNames[remote] {
 				seenNames[remote] = true
-				entries = append(entries, &Object{
-					f: f, remote: remote, size: item.SizeBytes,
-					modTime: time.Unix(item.Timestamp, 0),
-					mediaKey: item.MediaKey, dedupKey: item.DedupKey,
-				})
+				entries = append(entries, f.libraryObject(remote, item))
 			}
 		}
 
@@ -578,45 +574,17 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 		} else {
 			albumName = strings.TrimPrefix(fullDir, "Album/")
 		}
-		// Resolve album name to media key
-		f.albumMu.Lock()
-		albumKey := f.albums[albumName]
-		f.albumMu.Unlock()
-
-		if albumKey != "" {
-			// Find items belonging to this album.
-			// Match by: collection_id == album media key, OR
-			// collection_id maps to this album name via reverse lookup.
-			for _, item := range f.libCache {
-				if item.FileName == "" || item.CollectionID == "" {
-					continue
+		for name, item := range presentNames(f.scopeItems(albumName)) {
+			if !seenNames[name] {
+				seenNames[name] = true
+				listRemote := dir + "/" + name
+				if dir == "" {
+					listRemote = name
 				}
-				// Check if this item belongs to the requested album
-				belongsToAlbum := item.CollectionID == albumKey
-				if !belongsToAlbum {
-					f.albumMu.Lock()
-					ownerName := f.albumByKey[item.CollectionID]
-					f.albumMu.Unlock()
-					belongsToAlbum = ownerName == albumName
-				}
-				if belongsToAlbum {
-					remote := item.FileName
-					if !seenNames[remote] {
-						seenNames[remote] = true
-						listRemote := dir + "/" + remote
-						if dir == "" {
-							listRemote = remote
-						}
-						entries = append(entries, &Object{
-							f: f, remote: listRemote, size: item.SizeBytes,
-							modTime: time.Unix(item.Timestamp, 0),
-							mediaKey: item.MediaKey, dedupKey: item.DedupKey,
-						})
-					}
-				}
+				entries = append(entries, f.libraryObject(listRemote, item))
 			}
 		}
-		fs.Debugf(f, "Album %q (key=%s): found %d items", albumName, albumKey, len(entries))
+		fs.Debugf(f, "Album %q: found %d items", albumName, len(entries))
 
 	case fullDir == "ExistingAlbum" || (f.root != "" && fullDir == f.root+"/ExistingAlbum"):
 		// ExistingAlbum: empty placeholder dir for mount apps
@@ -674,19 +642,44 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		return nil, fs.ErrorObjectNotFound
 	}
 
-	// Library items are keyed by flat filename. Try the remote as-is first,
-	// then fall back to the base name (strips any path prefix).
 	f.libMu.Lock()
-	item, ok := f.libCache[remote]
-	if !ok {
-		item, ok = f.libCache[path.Base(remote)]
-	}
-	f.libMu.Unlock()
+	defer f.libMu.Unlock()
 
-	if !ok {
+	// Look the name up where List would show it: in its album, or loose at
+	// the root
+	rp := f.resolvePath(remote)
+	leaf := path.Base(rp.leaf)
+	switch {
+	case rp.mode == albumByName && !strings.Contains(rp.leaf, "/"):
+		if item, ok := presentNames(f.scopeItems(rp.albumRef))[leaf]; ok {
+			return f.libraryObject(remote, item), nil
+		}
+	case rp.mode == albumNone && !strings.Contains(rp.leaf, "/"):
+		if item, ok := presentNames(f.scopeItems(""))[leaf]; ok {
+			return f.libraryObject(remote, item), nil
+		}
+	}
+
+	// Otherwise (ExistingAlbum paths, or an upload whose album isn't known
+	// yet) accept a file name that is unique in the whole library
+	var found *api.LibraryItem
+	for _, item := range f.libCache {
+		if item.FileName != leaf {
+			continue
+		}
+		if found != nil {
+			return nil, fs.ErrorObjectNotFound
+		}
+		found = item
+	}
+	if found == nil {
 		return nil, fs.ErrorObjectNotFound
 	}
+	return f.libraryObject(remote, found), nil
+}
 
+// libraryObject returns the Object for a library item listed as remote
+func (f *Fs) libraryObject(remote string, item *api.LibraryItem) *Object {
 	return &Object{
 		f:        f,
 		remote:   remote,
@@ -694,7 +687,73 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		modTime:  time.Unix(item.Timestamp, 0),
 		mediaKey: item.MediaKey,
 		dedupKey: item.DedupKey,
-	}, nil
+	}
+}
+
+// scopeItems returns the library items listed loose at the root (album "")
+// or in the named album. Call with libMu held.
+func (f *Fs) scopeItems(album string) []*api.LibraryItem {
+	f.albumMu.Lock()
+	defer f.albumMu.Unlock()
+	albumKey := ""
+	if album != "" {
+		albumKey = f.albums[album]
+		if albumKey == "" {
+			return nil
+		}
+	}
+	var items []*api.LibraryItem
+	for _, item := range f.libCache {
+		if item.FileName == "" {
+			continue
+		}
+		switch {
+		case album == "":
+			if item.CollectionID != "" {
+				continue
+			}
+		case item.CollectionID == "":
+			continue
+		case item.CollectionID != albumKey && f.albumByKey[item.CollectionID] != album:
+			continue
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// presentNames returns items by the name they are listed under. Items that
+// share a name are listed as "name-<unix seconds>.ext" from their
+// timestamp, and those that also share the second get their media key
+// added, so every name is unique and stays the same between listings.
+func presentNames(items []*api.LibraryItem) map[string]*api.LibraryItem {
+	counts := make(map[string]int, len(items))
+	for _, item := range items {
+		counts[item.FileName]++
+	}
+	stamped := make(map[string]int)
+	stamp := func(item *api.LibraryItem) string {
+		ext := path.Ext(item.FileName)
+		return strings.TrimSuffix(item.FileName, ext) + "-" + strconv.FormatInt(item.Timestamp, 10) + ext
+	}
+	for _, item := range items {
+		if counts[item.FileName] > 1 {
+			stamped[stamp(item)]++
+		}
+	}
+	names := make(map[string]*api.LibraryItem, len(items))
+	for _, item := range items {
+		name := item.FileName
+		if counts[name] > 1 {
+			name = stamp(item)
+			if stamped[name] > 1 {
+				ext := path.Ext(name)
+				name = strings.TrimSuffix(name, ext) + "-" + item.MediaKey + ext
+			}
+		}
+		names[name] = item
+	}
+	return names
 }
 
 func (f *Fs) newObject(remote string, entry *phantomEntry) *Object {
@@ -751,13 +810,22 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 		}
 		// Update library cache so subsequent List/NewObject calls see this file
 		// without needing a full refresh from Google's API.
-		f.libMu.Lock()
-		f.libCache[path.Base(rp.leaf)] = &api.LibraryItem{
+		item := &api.LibraryItem{
 			MediaKey:  mediaKey,
 			FileName:  path.Base(rp.leaf),
 			SizeBytes: size,
 			Timestamp: modTime.Unix(),
 		}
+		switch rp.mode {
+		case albumByName:
+			f.albumMu.Lock()
+			item.CollectionID = f.albums[rp.albumRef]
+			f.albumMu.Unlock()
+		case albumExisting:
+			item.CollectionID = rp.albumRef
+		}
+		f.libMu.Lock()
+		f.libCache[mediaKey] = item
 		f.libMu.Unlock()
 		// Persist updated cache to disk
 		f.saveLibraryCache()
