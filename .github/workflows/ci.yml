@@ -13,6 +13,8 @@ on:
 env:
   CI_LINUX_ONLY: "true"
   DEBIAN_FRONTEND: noninteractive
+  # Bump to throw away the cached apt package lists and .debs
+  CI_APT_CACHE_VERSION: "1"
   CI_LINUX_BOOTSTRAP_PACKAGES: >-
     build-essential ca-certificates curl fuse3 git git-annex
     git-annex-remote-rclone jq kmod libfuse-dev nfs-common
@@ -40,6 +42,16 @@ jobs:
       linux_matrix: ${{ steps.config.outputs.linux_matrix }}
       extra_matrix: ${{ steps.config.outputs.extra_matrix }}
     steps:
+      - &cache_apt_packages
+        name: Cache apt packages
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_APT_CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          restore-keys: |
+            apt-${{ env.CI_APT_CACHE_VERSION }}-${{ runner.os }}-${{ runner.arch }}-
+
       - &bootstrap_linux_runner
         name: Bootstrap Linux runner
         if: runner.os == 'Linux'
@@ -77,11 +89,25 @@ jobs:
             done
 
             if (( ${#missing[@]} )); then
-              echo "Updating package list..."
-              apt_opts=(-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-              sudo "$APT_GET" "${apt_opts[@]}" update
+              # Package lists and .debs live in ~/.apt-cache, which the "Cache apt
+              # packages" step restores, so a warm runner installs without
+              # touching the network and can't hang on a slow mirror.
+              APT_CACHE="$HOME/.apt-cache"
+              mkdir -p "$APT_CACHE/archives/partial" "$APT_CACHE/lists/partial"
+              apt_opts=(-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+                -o Dir::Cache::Archives="$APT_CACHE/archives" -o Dir::State::Lists="$APT_CACHE/lists")
               echo "Installing missing packages: ${missing[*]}"
-              sudo "$APT_GET" "${apt_opts[@]}" install -y --no-install-recommends "${missing[@]}"
+              if find "$APT_CACHE/lists" -maxdepth 1 -name '*_Packages*' | grep -q . &&
+                sudo "$APT_GET" "${apt_opts[@]}" install -y --no-install-recommends "${missing[@]}"; then
+                echo "Installed from the cached package lists."
+              else
+                echo "Updating package list..."
+                sudo "$APT_GET" "${apt_opts[@]}" update
+                sudo "$APT_GET" "${apt_opts[@]}" install -y --no-install-recommends "${missing[@]}"
+              fi
+              # Hand the cache back to the runner user so the cache step can save it
+              sudo rm -f "$APT_CACHE/archives/lock" "$APT_CACHE/lists/lock"
+              sudo chown -R "$(id -u):$(id -g)" "$APT_CACHE"
             else
               echo "Linux runner packages already installed."
             fi
@@ -172,6 +198,7 @@ jobs:
     permissions:
       contents: read
     steps:
+      - *cache_apt_packages
       - *bootstrap_linux_runner
 
       - name: Checkout
@@ -266,6 +293,7 @@ jobs:
     permissions:
       contents: read
     steps:
+      - *cache_apt_packages
       - *bootstrap_linux_runner
 
       - name: Checkout
@@ -354,6 +382,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - *cache_apt_packages
       - *bootstrap_linux_runner
 
       - name: Checkout
@@ -432,6 +461,7 @@ jobs:
     permissions:
       pull-requests: write
     steps:
+      - *cache_apt_packages
       - *bootstrap_linux_runner
 
       - name: Comment PR with artifact link
@@ -456,6 +486,7 @@ jobs:
     permissions:
       packages: write
     steps:
+      - *cache_apt_packages
       - *bootstrap_linux_runner
 
       - name: Verify Docker is available
@@ -683,6 +714,7 @@ jobs:
       contents: read
       packages: write
     steps:
+      - *cache_apt_packages
       - *bootstrap_linux_runner
 
       - name: Verify Docker is available
