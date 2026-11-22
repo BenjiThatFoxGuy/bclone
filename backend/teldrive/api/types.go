@@ -133,6 +133,14 @@ type CategorySize struct {
 	Size int64 `json:"totalSize"`
 }
 
+// CreateFileResponse is the server's response to POST /api/files. Only the
+// fields bclone inspects are decoded; the rest is ignored.
+type CreateFileResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
 type EventSource struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
