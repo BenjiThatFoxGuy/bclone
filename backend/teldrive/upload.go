@@ -550,9 +550,8 @@ func (o *Object) uploadMultipart(ctx context.Context, in io.Reader, src fs.Objec
 func (o *Object) createFile(ctx context.Context, src fs.ObjectInfo, uploadInfo *uploadInfo) error {
 
 	opts := rest.Opts{
-		Method:     "POST",
-		Path:       "/api/files",
-		NoResponse: true,
+		Method: "POST",
+		Path:   "/api/files",
 	}
 
 	payload := api.CreateFileRequest{
@@ -567,13 +566,18 @@ func (o *Object) createFile(ctx context.Context, src fs.ObjectInfo, uploadInfo *
 		ModTime:   src.ModTime(ctx).UTC(),
 	}
 
+	var result api.CreateFileResponse
 	err := o.fs.pacer.Call(func() (bool, error) {
-		resp, err := o.fs.srv.CallJSON(ctx, &opts, &payload, nil)
+		resp, err := o.fs.srv.CallJSON(ctx, &opts, &payload, &result)
+		if resp != nil && resp.StatusCode == 409 {
+			// 409 = upload session incomplete; retry so the parts can settle
+			return true, fmt.Errorf("server rejected file create (409): upload session incomplete")
+		}
 		return shouldRetry(ctx, resp, err)
 	})
 
 	if err != nil {
-		return err
+		return fmt.Errorf("create file %q failed: %w", uploadInfo.fileName, err)
 	}
 
 	return nil
