@@ -19,6 +19,12 @@ Paths may be as deep as required, e.g. `remote:directory/subdirectory`.
 
 **For now** max upload filesize is 4GB. That's mean if you have a paid account, you will still limit as free account.
 
+TeraBox rejects file and directory names containing non-BMP Unicode
+characters (U+10000 and above, which includes most emoji) with
+`Invalid file name`. The backend reports this as an error before uploading
+instead of silently renaming the file. BMP symbols such as `✅` and `⭐` are
+accepted.
+
 Download in multithread mode and single thread mode has the same speed result.  Got about 1.7 - 1.9 MB/s for standart multithread download and the same result for one thread (with key`--multi-thread-streams 1`)
 
 Looks like cookie live period is 1 year, I start develop a few months ago, my cookie still works.
