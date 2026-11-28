@@ -422,23 +422,23 @@ func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo) (*uploadI
 		Path:   "/api/uploads/" + uploadID,
 	}
 
-	chunkSize := int64(o.fs.opt.ChunkSize)
-
-	if chunkSize < src.Size() {
-		err := o.fs.pacer.Call(func() (bool, error) {
-			resp, err := o.fs.srv.CallJSON(ctx, &opts, nil, &uploadParts)
-			return shouldRetry(ctx, resp, err)
-		})
-
-		if err != nil {
-			return nil, err
-		}
-		existingChunks = make(map[int]api.PartFile, len(uploadParts))
-		for _, part := range uploadParts {
-			existingChunks[part.PartNo] = part
-		}
-
+	// Ask about existing parts on every upload, including single-part files.
+	// This lookup used to be skipped when the file fitted in one chunk, so a
+	// retry after a lost response re-sent the whole file and left duplicate
+	// messages in the server's Telegram storage channel.
+	err = o.fs.pacer.Call(func() (bool, error) {
+		resp, err := o.fs.srv.CallJSON(ctx, &opts, nil, &uploadParts)
+		return shouldRetry(ctx, resp, err)
+	})
+	if err != nil {
+		return nil, err
 	}
+	existingChunks = make(map[int]api.PartFile, len(uploadParts))
+	for _, part := range uploadParts {
+		existingChunks[part.PartNo] = part
+	}
+
+	chunkSize := int64(o.fs.opt.ChunkSize)
 
 	totalChunks := src.Size() / chunkSize
 
