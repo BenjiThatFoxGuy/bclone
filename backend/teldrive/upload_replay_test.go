@@ -58,3 +58,42 @@ func TestPrepareUploadChecksExistingPartsForSingleChunkFile(t *testing.T) {
 	assert.Equal(t, 1, partLookups, "single-part upload must ask the server for existing parts")
 	assert.NotNil(t, info.existingChunks, "an empty existing-parts map must still be built")
 }
+
+// A genuine overwrite (same name and size, different content) must not be
+// mistaken for a replay of the old upload. Modtime is part of the session id
+// so the two get different sessions.
+func TestPrepareUploadSessionIDIncludesModTime(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/uploads/") {
+			paths = append(paths, r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	f := &Fs{
+		root:         "",
+		name:         "test",
+		rootFolderID: "root-folder",
+		userId:       1,
+		opt:          Options{ChunkSize: 100 * fs.Mebi},
+		srv:          rest.NewClient(fshttp.NewClient(ctx)).SetRoot(srv.URL),
+		pacer:        fs.NewPacer(ctx, pacer.NewDefault()),
+	}
+	f.dirCache = dircache.New(f.root, f.rootFolderID, f)
+	o := &Object{fs: f, remote: "song.flac"}
+
+	base := time.Now()
+	for _, modTime := range []time.Time{base, base.Add(time.Minute)} {
+		src := object.NewStaticObjectInfo("song.flac", modTime, 100, true, nil, f)
+		_, err := o.prepareUpload(ctx, src)
+		require.NoError(t, err)
+	}
+	require.Len(t, paths, 2)
+	assert.NotEqual(t, paths[0], paths[1], "different modtimes must use different upload sessions")
+}

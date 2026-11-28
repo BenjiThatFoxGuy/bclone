@@ -410,7 +410,11 @@ func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo) (*uploadI
 		return &uploadInfo{fileName: leaf, dir: directoryID}, nil
 	}
 
-	uploadID := getMD5Hash(fmt.Sprintf("%s:%s:%d:%d", directoryID, leaf, src.Size(), o.fs.userId))
+	// Modtime is part of the session id so that a genuine overwrite of the
+	// same name and size starts a new session instead of replaying the old
+	// file's parts. A retry of the same logical upload keeps the same modtime
+	// and therefore the same id, which is what lets the server reconcile it.
+	uploadID := getMD5Hash(fmt.Sprintf("%s:%s:%d:%d:%d", directoryID, leaf, src.Size(), o.fs.userId, src.ModTime(ctx).UnixNano()))
 
 	var (
 		uploadParts    []api.PartFile
